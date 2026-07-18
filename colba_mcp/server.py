@@ -105,7 +105,7 @@ async def list_pipelines() -> Any:
 async def start_process(template_id: str, payload: dict) -> Any:
     """
     Start a new workflow process under a template.
-    template_id: UUID of the workflow template (use list_pipelines to find it).
+    template_id: UUID of the workflow template (MUST use the 'id' field from list_pipelines, NOT 'pipeline_id').
     payload: Input data matching the template's header_schema.
     Returns: The started process ID and initial status.
     """
@@ -124,7 +124,7 @@ async def list_processes(
     """
     List all processes visible to the member (filtered by backend per role).
     status: Filter by status: 'active', 'completed', 'rejected', 'failed'.
-    pipeline_id: Filter by pipeline template UUID.
+    pipeline_id: Filter by pipeline template UUID (use the 'id' field from list_pipelines).
     limit: Max results to return (default: 50, max: 200).
     offset: Pagination offset (default: 0).
     NOTE: Pagination is server-side; the list may be incomplete if total > limit.
@@ -365,7 +365,7 @@ async def delete_vendor(vendor_id: str) -> Any:
 async def archive_pipeline(template_id: str) -> Any:
     """
     Deactivate/archive a workflow pipeline template.
-    template_id: UUID of the template.
+    template_id: UUID of the template (MUST use the 'id' field from list_pipelines, NOT 'pipeline_id').
     """
     async def _call(client: ColbaClient):
         return await client.archive_pipeline(template_id)
