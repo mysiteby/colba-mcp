@@ -126,15 +126,18 @@ Supported field types used by the API/schema layer:
 
 | Type | Use for | Notes |
 | :--- | :--- | :--- |
-| `string` | Short text values | Use `format: "email"` for email-like strings when useful. |
+| `string` / `text` | Short text values | Use `format: "email"` for email-like strings when useful. `text` is accepted as an alias. |
 | `number` | Numeric values | Runtime validates numeric submissions with `float(...)`. |
 | `boolean` | True/false values | Stored in schema as boolean. |
 | `date` | Date or datetime values | Formula functions expect ISO-like date strings. |
 | `select` | One option from a list/source | Use `options.source` for entity-backed values, or `options.choices/options`. |
+| `user` | Member / User selection | Dedicated member picker input field. |
+| `workgroup` | Workgroup / Team selection | Dedicated workgroup picker input field. |
 | `array` | Tables / line items | Use `columns[]`; row formulas are supported. |
 | `file` | File upload fields | If `options.multiple: true`, submitted value must be an array. |
 
 Observed UI-friendly aliases:
+- `text` is accepted as an alias for `string`.
 - `table` is treated like `array` by formula evaluation in runtime code.
 - `line_items` is NOT a valid field type for `header_schema` / `collect_input` fields — use `type: "array"` with `columns[]` instead. (You may use `name: "line_items"` as the field name, but its `type` must be `"array"`).
 - `email` is better represented as `type: "string", "format": "email"` unless the UI explicitly supports a separate email type.
