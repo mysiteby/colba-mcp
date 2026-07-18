@@ -442,11 +442,29 @@ def get_workflow_json_creation_doc() -> str:
     Returns the official Workflow JSON Creation guide, containing strict rules, schema specifications,
     node hierarchies, output_enum validation, and escalation policies for generating new pipeline JSONs.
     """
-    doc_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "skills", "workflow_json_creation.md")
-    if not os.path.exists(doc_path):
-        doc_path = "docs/skills/workflow_json_creation.md"
-    with open(doc_path, "r", encoding="utf-8") as f:
-        return f.read()
+    base_dir = os.path.dirname(__file__)
+    parent_dir = os.path.dirname(base_dir)
+    cwd = os.getcwd()
+
+    candidate_paths = [
+        os.path.join(base_dir, "docs", "workflow_json_creation.md"),
+        os.path.join(base_dir, "workflow_json_creation.md"),
+        os.path.join(parent_dir, "docs", "skills", "workflow_json_creation.md"),
+        os.path.join(cwd, "docs", "skills", "workflow_json_creation.md"),
+        os.path.join(cwd, "colba_mcp", "docs", "workflow_json_creation.md"),
+    ]
+
+    for path in candidate_paths:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    if content and len(content) > 50:
+                        return content
+            except Exception:
+                pass
+
+    raise RuntimeError("Workflow JSON Creation documentation file could not be located on disk.")
 
 
 @mcp.prompt()
