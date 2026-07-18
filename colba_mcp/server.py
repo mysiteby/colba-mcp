@@ -400,6 +400,16 @@ async def resolve_mcp_approval(
 
 
 @mcp.tool()
+async def get_pipeline_generation_rules() -> Any:
+    """
+    Get the official specification, validation rules, node type hierarchies, and schema guidelines
+    for generating new Colba workflow pipeline JSON configurations.
+    Returns: Complete Markdown specification text to guide pipeline JSON creation.
+    """
+    return get_workflow_json_creation_doc()
+
+
+@mcp.tool()
 async def create_pipeline(
     name: str,
     pipeline_config: dict,
@@ -408,7 +418,7 @@ async def create_pipeline(
     """
     Create a new workflow pipeline template in Colba.
     name: Human readable template name (e.g. 'Vendor Invoice Approval').
-    pipeline_config: Complete JSON workflow configuration complying strictly with docs://skills/workflow_json_creation specification. Must contain start_node_id and valid nodes list.
+    pipeline_config: Complete JSON workflow configuration complying strictly with docs://skills/workflow_json_creation specification. Must contain start_node_id and valid nodes list. Call get_pipeline_generation_rules tool first to inspect the required format.
     description: Optional human-readable description.
     Returns: Created pipeline template details including template_id.
     """

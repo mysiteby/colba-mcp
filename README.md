@@ -140,7 +140,11 @@ The MCP server exposes the following tools to AI agents:
   - `comment` (string, optional).
 * **Example prompt**: *"Approve request xyz-456 with comment 'Budget approved'"*
 
-### 8. `create_pipeline`
+### 8. `get_pipeline_generation_rules`
+*Retrieve the official specification and validation rules for generating pipeline JSONs.*
+* **Example prompt**: *"Get the rules for creating a pipeline JSON"*
+
+### 9. `create_pipeline`
 *Create a new workflow pipeline template in Colba.*
 * **Parameters**:
   - `name` (string): Template title (e.g., *"Procurement Invoice Approval"*).
