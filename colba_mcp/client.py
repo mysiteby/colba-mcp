@@ -130,3 +130,204 @@ class ColbaClient:
         )
         response.raise_for_status()
         return response.json()
+
+    async def sync_directory(self, data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+        response = await self.client.post(
+            "/api/v1/directory/sync",
+            json=data,
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def create_workgroup(
+        self, name: str, type: str, parent_id: Optional[str] = None, key: Optional[str] = None
+    ) -> Dict[str, Any]:
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+        
+        payload: Dict[str, Any] = {"name": name, "type": type}
+        if parent_id:
+            validate_uuid(parent_id, "parent_id")
+            payload["parent_id"] = parent_id
+        if key:
+            payload["key"] = key
+
+        response = await self.client.post(
+            "/api/v1/directory/workgroups",
+            json=payload,
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def delete_workgroup(self, workgroup_id: str) -> Dict[str, Any]:
+        validate_uuid(workgroup_id, "workgroup_id")
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        response = await self.client.delete(
+            f"/api/v1/directory/workgroups/{workgroup_id}",
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def create_custom_field(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        # Normalize list options to choices dictionary contract
+        options = payload.get("options")
+        if options is not None:
+            normalized_options = {}
+            if isinstance(options, list):
+                choices = []
+                for opt in options:
+                    if isinstance(opt, dict):
+                        choices.append(opt)
+                    else:
+                        choices.append({"value": str(opt), "label": str(opt)})
+                normalized_options = {"choices": choices}
+            elif isinstance(options, dict):
+                normalized_options = options
+            payload = {**payload, "options": normalized_options}
+
+        response = await self.client.post(
+            "/api/v1/workflow/fields",
+            json=payload,
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def delete_custom_field(self, field_id: str) -> Dict[str, Any]:
+        validate_uuid(field_id, "field_id")
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        response = await self.client.delete(
+            f"/api/v1/workflow/fields/{field_id}",
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def create_vendor(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        response = await self.client.post(
+            "/api/v1/accounting/vendors",
+            json=payload,
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def delete_vendor(self, vendor_id: str) -> Dict[str, Any]:
+        validate_uuid(vendor_id, "vendor_id")
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        response = await self.client.delete(
+            f"/api/v1/accounting/vendors/{vendor_id}",
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def archive_pipeline(self, template_id: str) -> Dict[str, Any]:
+        validate_uuid(template_id, "template_id")
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        response = await self.client.delete(
+            f"/api/v1/templates/{template_id}",
+            headers=headers
+        )
+        response.raise_for_status()
+        if response.status_code == 204:
+            return {"status": "archived"}
+        return response.json()
+
+    async def resolve_mcp_approval(
+        self,
+        action: str,
+        approval_id: Optional[str] = None,
+        token: Optional[str] = None,
+        session_key: Optional[str] = None
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"action": action}
+        if approval_id:
+            validate_uuid(approval_id, "approval_id")
+            payload["approval_id"] = approval_id
+        if token:
+            payload["token"] = token
+
+        headers = {}
+        await self._ensure_org_id()
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+
+        auth_token = session_key or self.token
+        client = httpx.AsyncClient(
+            base_url=self.api_url,
+            headers={"X-API-Key": auth_token},
+            timeout=15.0,
+            follow_redirects=True,
+        )
+        try:
+            response = await client.post(
+                "/api/v1/mcp/approvals/action",
+                json=payload,
+                headers=headers
+            )
+            response.raise_for_status()
+            return response.json()
+        finally:
+            await client.aclose()
+
+    async def create_pipeline(
+        self,
+        name: str,
+        pipeline_config: Dict[str, Any],
+        description: Optional[str] = None
+    ) -> Dict[str, Any]:
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+
+        payload = {
+            "name": name,
+            "description": description or "",
+            "pipeline_config": pipeline_config,
+        }
+        response = await self.client.post(
+            "/api/v1/templates/",
+            json=payload,
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+

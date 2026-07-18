@@ -167,13 +167,23 @@ async def list_pending_requests(limit: int = 50, offset: int = 0) -> Any:
 
 
 @mcp.tool()
-async def get_process_details(process_id: str) -> Any:
+async def get_process_details(process_id: str, verbose: bool = False) -> Any:
     """
     Fetch detailed status, current node states, and context variables of a specific process.
     process_id: UUID of the process.
+    verbose: If True, returns full process structure including pipeline_config and display_all_data.
+             If False (default), returns a compact representation with context variables but config omitted.
     """
+    import copy
     async def _call(client: ColbaClient):
-        return await client.get_process_details(process_id)
+        raw = await client.get_process_details(process_id)
+        if not raw or "error" in raw:
+            return raw
+        cleaned_data = copy.deepcopy(raw)
+        if not verbose:
+            cleaned_data.pop("pipeline_config", None)
+            cleaned_data.pop("display_all_data", None)
+        return cleaned_data
     return await handle_mcp_call(_call)
 
 
@@ -198,8 +208,7 @@ async def submit_decision(
     Submit a decision on a pending approval request.
     request_id: UUID of the pending approval request.
     status: MUST be one of the values from available_actions returned by
-            get_request_details, or one of the built-in values: 'approved', 'rejected'.
-            Do NOT guess — always call get_request_details first.
+            get_request_details. Always call get_request_details first to obtain valid action IDs.
     comment: Optional explanation for the decision (recommended for audit trail).
     """
     # Validate UUID early — surfaces a clean error instead of a backend 422
@@ -220,3 +229,229 @@ async def submit_decision(
     async def _call(client: ColbaClient):
         return await client.submit_decision(request_id, status, comment)
     return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def sync_directory(data: list) -> Any:
+    """
+    Sync members of the organization.
+    data: List of members mapping to the onboarding structure.
+    """
+    async def _call(client: ColbaClient):
+        return await client.sync_directory(data)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def create_workgroup(name: str, type: str, parent_id: Optional[str] = None, key: Optional[str] = None) -> Any:
+    """
+    Create a new workgroup (DEPARTMENT, LOCATION, etc.) in the organization.
+    name: Name of the workgroup.
+    type: 'DEPARTMENT', 'LOCATION', or 'SQUAD'.
+    parent_id: Optional parent workgroup UUID.
+    key: Optional unique workgroup key.
+    """
+    async def _call(client: ColbaClient):
+        return await client.create_workgroup(name, type, parent_id, key)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def delete_workgroup(workgroup_id: str) -> Any:
+    """
+    Delete a workgroup from the organization structure.
+    workgroup_id: UUID of the workgroup to delete.
+    """
+    async def _call(client: ColbaClient):
+        return await client.delete_workgroup(workgroup_id)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def create_custom_field(
+    name: str,
+    label: str,
+    type: str,
+    description: Optional[str] = None,
+    validation: Optional[dict] = None,
+    options: Optional[list] = None,
+    is_active: bool = True
+) -> Any:
+    """
+    Create a custom metadata field for workflows.
+    name: Identifier name (alphanumeric/snake_case).
+    label: Human readable display label.
+    type: Field type (e.g. 'text', 'number', 'select', 'date').
+    description: Optional details.
+    validation: Optional regex/constraint config dictionary.
+    options: Optional choice list for select fields.
+    is_active: True if field is enabled.
+    """
+    payload = {
+        "name": name,
+        "label": label,
+        "type": type,
+        "description": description,
+        "validation": validation or {},
+        "options": options or [],
+        "is_active": is_active
+    }
+    async def _call(client: ColbaClient):
+        return await client.create_custom_field(payload)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def delete_custom_field(field_id: str) -> Any:
+    """
+    Delete a custom field from the system.
+    field_id: UUID of the custom field to delete.
+    """
+    async def _call(client: ColbaClient):
+        return await client.delete_custom_field(field_id)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def create_vendor(
+    name: str,
+    email: Optional[str] = None,
+    account_number: Optional[str] = None,
+    bank_country_code: Optional[str] = None,
+    contact_details: Optional[dict] = None,
+    address_details: Optional[dict] = None,
+    settings: Optional[dict] = None,
+    visible: bool = True,
+    is_active: bool = True,
+    financial_details: Optional[list] = None
+) -> Any:
+    """
+    Create a new supplier/vendor profile.
+    name: Name of the vendor.
+    email: Primary email.
+    account_number: Bank account number.
+    bank_country_code: country code.
+    financial_details: List of financial settings/details for invoicing.
+    """
+    payload = {
+        "name": name,
+        "email": email,
+        "account_number": account_number,
+        "bank_country_code": bank_country_code,
+        "contact_details": contact_details or {},
+        "address_details": address_details or {},
+        "settings": settings or {},
+        "visible": visible,
+        "is_active": is_active,
+        "financial_details": financial_details or []
+    }
+    async def _call(client: ColbaClient):
+        return await client.create_vendor(payload)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def delete_vendor(vendor_id: str) -> Any:
+    """
+    Delete a vendor from accounting records.
+    vendor_id: UUID of the vendor.
+    """
+    async def _call(client: ColbaClient):
+        return await client.delete_vendor(vendor_id)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def archive_pipeline(template_id: str) -> Any:
+    """
+    Deactivate/archive a workflow pipeline template.
+    template_id: UUID of the template.
+    """
+    async def _call(client: ColbaClient):
+        return await client.archive_pipeline(template_id)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def resolve_mcp_approval(
+    action: str,
+    approval_id: Optional[str] = None,
+    token: Optional[str] = None,
+    session_key: Optional[str] = None
+) -> Any:
+    """
+    Resolve (approve or reject) a pending MCP human-in-the-loop (HITL) transaction.
+    action: MUST be 'approve' or 'reject'.
+    approval_id: UUID of the pending approval (optional, exactly one of approval_id or token is required).
+    token: Raw token string from the pending approval response (optional).
+    session_key: Operator's active session key. If not provided, defaults to COLBA_TOKEN.
+    """
+    if action not in ("approve", "reject"):
+        return {"error": "invalid_input", "message": "action must be 'approve' or 'reject'."}
+
+    async def _call(client: ColbaClient):
+        return await client.resolve_mcp_approval(
+            action=action,
+            approval_id=approval_id,
+            token=token,
+            session_key=session_key
+        )
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def create_pipeline(
+    name: str,
+    pipeline_config: dict,
+    description: Optional[str] = None
+) -> Any:
+    """
+    Create a new workflow pipeline template in Colba.
+    name: Human readable template name (e.g. 'Vendor Invoice Approval').
+    pipeline_config: Complete JSON workflow configuration complying strictly with docs://skills/workflow_json_creation specification. Must contain start_node_id and valid nodes list.
+    description: Optional human-readable description.
+    Returns: Created pipeline template details including template_id.
+    """
+    async def _call(client: ColbaClient):
+        return await client.create_pipeline(
+            name=name,
+            pipeline_config=pipeline_config,
+            description=description
+        )
+    return await handle_mcp_call(_call)
+
+
+# ---------------------------------------------------------------------------
+# Resources & Prompts
+# ---------------------------------------------------------------------------
+
+
+@mcp.resource("docs://skills/workflow_json_creation")
+def get_workflow_json_creation_doc() -> str:
+    """
+    Returns the official Workflow JSON Creation guide, containing strict rules, schema specifications,
+    node hierarchies, output_enum validation, and escalation policies for generating new pipeline JSONs.
+    """
+    doc_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "skills", "workflow_json_creation.md")
+    if not os.path.exists(doc_path):
+        doc_path = "docs/skills/workflow_json_creation.md"
+    with open(doc_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+@mcp.prompt()
+def generate_pipeline_json(user_requirements: str) -> str:
+    """
+    Prompt template to guide an LLM agent in generating a new pipeline JSON following strict Colba specification rules.
+    """
+    doc_content = get_workflow_json_creation_doc()
+    return (
+        f"You are an expert pipeline generator for Colba workflow engine.\n"
+        f"Generate a valid pipeline JSON matching the user requirements below.\n\n"
+        f"USER REQUIREMENTS:\n{user_requirements}\n\n"
+        f"STRICT WORKFLOW SPECIFICATION AND VALIDATION RULES:\n"
+        f"```markdown\n{doc_content}\n```\n\n"
+        f"Output ONLY valid JSON matching the specification."
+    )
+
+
