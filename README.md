@@ -156,6 +156,42 @@ The MCP server exposes the following tools to AI agents:
 *Retrieve all registered global custom fields in the organization.*
 * **Example prompt**: *"Show all custom fields configured in the system"*
 
+### 11. `list_members`
+*List all active members (users/employees) in the organization.*
+* **Parameters**:
+  - `query` (string, optional): Search string to filter members by name.
+* **Example prompt**: *"Show all members or search for 'Alice'"*
+
+### 12. `list_workgroups`
+*List the organizational hierarchy (departments and locations).*
+* **Example prompt**: *"Show the departments tree"*
+
+### 13. `list_vendors`
+*List all registered vendors/counterparties in the organization.*
+* **Example prompt**: *"Show all vendors"*
+
+### 14. `update_pipeline`
+*Update an existing workflow pipeline template.*
+* **Parameters**:
+  - `template_id` (string, UUID): Template identifier.
+  - `pipeline_config` (object, optional): Updated JSON configuration.
+  - `name` (string, optional): New template name.
+  - `description` (string, optional): New description.
+* **Example prompt**: *"Rename pipeline template 'abc' to 'xyz'"*
+
+### 15. `update_custom_field`
+*Update an existing custom field or global field registration.*
+* **Parameters**:
+  - `field_id` (string, UUID): Custom field identifier.
+  - `label` (string, optional): New display label.
+  - `options` (object/array, optional): New choices or source.
+  - `is_active` (boolean, optional): Active status.
+* **Example prompt**: *"Mark custom field 'tax_rate' as inactive"*
+
+### 16. `get_update_log`
+*Retrieve the update log and changelog of the Colba MCP server.*
+* **Example prompt**: *"Show recent MCP server updates and changelog"*
+
 ---
 
 ## 📚 Resources
@@ -165,6 +201,9 @@ The official specification and validation rules for creating pipeline JSON struc
 Includes node type hierarchies (prioritizing `action` with `action_type: "integration"`), `output_enum` validation, `escalations` policies, `condition` dotted-path syntax, form field types (`type: "array"` for line items), and validation checklists.
 
 An external agent can fetch this resource via `read_resource` before generating a new pipeline JSON.
+
+### `docs://mcp/update_log`
+The official update log and changelog of the Colba MCP server, reflecting all newly added tools, features, and notifications about client restarts.
 
 ---
 

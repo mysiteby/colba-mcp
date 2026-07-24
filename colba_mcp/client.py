@@ -319,6 +319,95 @@ class ColbaClient:
         finally:
             await client.aclose()
 
+    async def list_members(self, query: Optional[str] = None) -> List[Dict[str, Any]]:
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+        
+        params = {}
+        if query:
+            params["query"] = query
+            
+        response = await self.client.get(
+            "/api/v1/directory/members",
+            headers=headers,
+            params=params
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def list_workgroups(self) -> List[Dict[str, Any]]:
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        response = await self.client.get(
+            "/api/v1/directory/tree",
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def list_vendors(self) -> List[Dict[str, Any]]:
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        response = await self.client.get(
+            "/api/v1/accounting/vendors",
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def update_pipeline(self, template_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        validate_uuid(template_id, "template_id")
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        response = await self.client.put(
+            f"/api/v1/templates/{template_id}",
+            json=payload,
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def update_custom_field(self, field_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        validate_uuid(field_id, "field_id")
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        options = payload.get("options")
+        if options is not None:
+            normalized_options = {}
+            if isinstance(options, list):
+                choices = []
+                for opt in options:
+                    if isinstance(opt, dict):
+                        choices.append(opt)
+                    else:
+                        choices.append({"value": str(opt), "label": str(opt)})
+                normalized_options = {"choices": choices}
+            elif isinstance(options, dict):
+                normalized_options = options
+            payload = {**payload, "options": normalized_options}
+
+        response = await self.client.put(
+            f"/api/v1/workflow/fields/{field_id}",
+            json=payload,
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def create_pipeline(
         self,
         name: str,

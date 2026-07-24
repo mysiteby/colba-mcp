@@ -448,6 +448,135 @@ async def create_pipeline(
     return await handle_mcp_call(_call)
 
 
+@mcp.tool()
+async def list_members(query: Optional[str] = None) -> Any:
+    """
+    List all active members (users/employees) in the organization.
+    query: Optional search string to filter members by full name.
+    Returns: A list of members with their IDs, names, emails, roles, and status.
+    """
+    async def _call(client: ColbaClient):
+        return await client.list_members(query)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def list_workgroups() -> Any:
+    """
+    List the organizational workgroups hierarchy (departments and locations).
+    Returns: A tree structure of workgroups with their member details and counts.
+    """
+    async def _call(client: ColbaClient):
+        return await client.list_workgroups()
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def list_vendors() -> Any:
+    """
+    List all registered vendors/counterparties in the organization.
+    Returns: A list of vendors with their IDs, names, and profiles.
+    """
+    async def _call(client: ColbaClient):
+        return await client.list_vendors()
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def update_pipeline(
+    template_id: str,
+    pipeline_config: Optional[dict] = None,
+    name: Optional[str] = None,
+    description: Optional[str] = None
+) -> Any:
+    """
+    Update an existing workflow pipeline template.
+    template_id: UUID of the template to update.
+    pipeline_config: Optional updated JSON workflow configuration.
+    name: Optional updated name.
+    description: Optional updated description.
+    """
+    async def _call(client: ColbaClient):
+        payload = {}
+        if pipeline_config is not None:
+            payload["pipeline_config"] = pipeline_config
+        if name is not None:
+            payload["name"] = name
+        if description is not None:
+            payload["description"] = description
+        return await client.update_pipeline(template_id, payload)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def update_custom_field(
+    field_id: str,
+    name: Optional[str] = None,
+    label: Optional[str] = None,
+    type: Optional[str] = None,
+    description: Optional[str] = None,
+    validation: Optional[dict] = None,
+    options: Optional[dict] = None,
+    is_active: Optional[bool] = None
+) -> Any:
+    """
+    Update an existing custom field / global field registration.
+    field_id: UUID of the custom field to update.
+    name: Optional system name.
+    label: Optional display label.
+    type: Optional field type.
+    description: Optional description.
+    validation: Optional validation schema.
+    options: Optional dropdown options or dynamic source settings.
+    is_active: Optional active status.
+    """
+    async def _call(client: ColbaClient):
+        payload = {}
+        if name is not None:
+            payload["name"] = name
+        if label is not None:
+            payload["label"] = label
+        if type is not None:
+            payload["type"] = type
+        if description is not None:
+            payload["description"] = description
+        if validation is not None:
+            payload["validation"] = validation
+        if options is not None:
+            payload["options"] = options
+        if is_active is not None:
+            payload["is_active"] = is_active
+        return await client.update_custom_field(field_id, payload)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def get_update_log() -> str:
+    """
+    Retrieve the Colba MCP Server Update Log and Changelog.
+    Contains lists of new tools, changes, and alerts about required client restarts.
+    """
+    base_dir = os.path.dirname(__file__)
+    path = os.path.join(base_dir, "docs", "update_log.md")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    return "Update log file not found."
+
+
+@mcp.resource("docs://mcp/update_log")
+def get_mcp_update_log_resource() -> str:
+    """
+    Returns the Colba MCP Server Update Log and Changelog.
+    """
+    base_dir = os.path.dirname(__file__)
+    path = os.path.join(base_dir, "docs", "update_log.md")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    return "Update log file not found."
+
+
 # ---------------------------------------------------------------------------
 # Resources & Prompts
 # ---------------------------------------------------------------------------

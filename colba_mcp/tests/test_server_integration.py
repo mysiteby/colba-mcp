@@ -127,6 +127,47 @@ async def test_colba_client_integration_flow():
         )
     )
 
+    # I. Mock list_members
+    respx.get(f"{api_url}/api/v1/directory/members").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"id": "00000000-0000-0000-0000-000000000007", "full_name": "Alice Smith"}]
+        )
+    )
+
+    # J. Mock list_workgroups
+    respx.get(f"{api_url}/api/v1/directory/tree").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"id": "00000000-0000-0000-0000-000000000008", "name": "HR"}]
+        )
+    )
+
+    # K. Mock list_vendors
+    respx.get(f"{api_url}/api/v1/accounting/vendors").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"id": "00000000-0000-0000-0000-000000000009", "name": "Vendor Corp"}]
+        )
+    )
+
+    # L. Mock update_pipeline
+    respx.put(f"{api_url}/api/v1/templates/{template_id}").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "updated"}
+        )
+    )
+
+    # M. Mock update_custom_field
+    field_id = "00000000-0000-0000-0000-000000000006"
+    respx.put(f"{api_url}/api/v1/workflow/fields/{field_id}").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "updated"}
+        )
+    )
+
     # Execute client flow
     # A. List pipelines
     pipelines = await client.list_pipelines()
@@ -170,6 +211,29 @@ async def test_colba_client_integration_flow():
     fields = await client.list_custom_fields()
     assert len(fields) == 1
     assert fields[0]["name"] == "department"
+
+    # I. List members
+    members = await client.list_members()
+    assert len(members) == 1
+    assert members[0]["full_name"] == "Alice Smith"
+
+    # J. List workgroups
+    workgroups = await client.list_workgroups()
+    assert len(workgroups) == 1
+    assert workgroups[0]["name"] == "HR"
+
+    # K. List vendors
+    vendors = await client.list_vendors()
+    assert len(vendors) == 1
+    assert vendors[0]["name"] == "Vendor Corp"
+
+    # L. Update pipeline
+    update_pipeline_res = await client.update_pipeline(template_id, {"name": "New Name"})
+    assert update_pipeline_res["status"] == "updated"
+
+    # M. Update custom field
+    update_field_res = await client.update_custom_field(field_id, {"label": "New Label"})
+    assert update_field_res["status"] == "updated"
 
     await client.close()
 
