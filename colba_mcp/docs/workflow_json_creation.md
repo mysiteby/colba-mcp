@@ -1567,10 +1567,12 @@ Example:
 ### Mapping examples
 
 Prefer these mappings when the entity exists:
-- employee-like value -> member/global field,
-- vendor-like value -> vendor/global field,
-- cost center -> cost center/global field,
-- account -> account/global field.
+- employee-like value -> member/global field (employe),
+- vendor-like value -> vendor/global field (vendors),
+- cost center -> cost center/global field (cost_center),
+- account -> account/global field,
+- bank country code -> bank country code/global field (bank_country_code),
+- task or process priority -> priority/global field (priority).
 
 If the entity exists in org context, do not downgrade it to plain text unless there is a strong reason.
 
@@ -1630,9 +1632,9 @@ Rules:
 6. Prefer entity-backed fields over free text for member, vendor, account, and cost-center concepts.
 7. Keep transition keys aligned with button/action IDs.
 8. Always include an `end` path for success and, when useful, a failure or rejection path too.
-9. **AI Agent Rule - Standard Entity Templates**: При генерации пайплайнов для работы со стандартными сущностями (счета `Bill`, инвойсы `Invoice`, запросы предложений `RFQ`, заказы `PO`, предложения `Quote`, чеки `Receipt`), ИИ-агент **должен использовать готовые поля из шаблонов сущностей** (используя точные системные имена ключей, типы и `x-binding` из таблицы разделов выше). При этом:
-   - Если в `global_fields` присутствуют поля для сущностей (например, контрагент `vendor` / `vendor_id`, валюта `currency` / `currency_code`, центр затрат `cost_center`), ИИ-агент должен привязывать их как глобальные поля, проставляя `custom_field_id` соответствующего глобального поля из контекста.
-   - ИИ-агент должен **обязательно включать табличную часть (позиции документа) `line_items`** (тип `array` / Table) в коллекте (форме ввода) для документов, которые имеют детальные позиции (особенно `Bill`, `Invoice`, `PO`, `Quote`, `Receipt`, `RFQ`). Системное имя этого поля должно быть строго `line_items`, а тип — `array`.
+9. **AI Agent Rule - Standard Entity Templates**: When generating pipelines for standard entities (bills `Bill`, invoices `Invoice`, RFQs `RFQ`, purchase orders `PO`, quotes `Quote`, receipts `Receipt`), the AI agent **MUST use the predefined fields from entity templates** (using exact system key names, types, and `x-binding` from the mapping tables above). Specifically:
+   - If there are fields for entities in `global_fields` (for example, employee `employe` / `employee`, counterparty/vendor `vendors`, cost center `cost_center`, department `department`, location `location`, job title `job_title`, role `role`, currency `currency`, tax rate `tax_rate`, bank country code `bank_country_code`, task/process priority `priority`), the AI agent MUST bind them as global fields, setting `custom_field_id` to the ID of the corresponding global field from context. Any reference to `employee`, `employee_id`, `employe_id`, or `member_id` must be bound to the `employe` global field. Priority and bank country code must similarly be mapped to `priority` and `bank_country_code` global fields respectively when used.
+   - The AI agent MUST include a line items table named strictly `line_items` (type `array` / Table) in the input form for documents that have detailed line items (especially `Bill`, `Invoice`, `PO`, `Quote`, `Receipt`, `RFQ`).
 
 
 ## Common Patterns
