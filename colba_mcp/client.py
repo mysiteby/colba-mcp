@@ -408,6 +408,54 @@ class ColbaClient:
         response.raise_for_status()
         return response.json()
 
+    async def list_blueprints(self, category: Optional[str] = None, query: Optional[str] = None) -> List[Dict[str, Any]]:
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        params = {}
+        if category:
+            params["category"] = category
+        if query:
+            params["query"] = query
+            
+        response = await self.client.get(
+            "/api/v1/blueprints/",
+            headers=headers,
+            params=params
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def get_blueprint(self, blueprint_id: str) -> Dict[str, Any]:
+        validate_uuid(blueprint_id, "blueprint_id")
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        response = await self.client.get(
+            f"/api/v1/blueprints/{blueprint_id}",
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def instantiate_blueprint(self, blueprint_id: str) -> Dict[str, Any]:
+        validate_uuid(blueprint_id, "blueprint_id")
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        response = await self.client.post(
+            f"/api/v1/blueprints/{blueprint_id}/instantiate",
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def create_pipeline(
         self,
         name: str,

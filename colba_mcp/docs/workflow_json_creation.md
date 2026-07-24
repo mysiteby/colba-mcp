@@ -1576,6 +1576,22 @@ Prefer these mappings when the entity exists:
 
 If the entity exists in org context, do not downgrade it to plain text unless there is a strong reason.
 
+
+## Pipeline Blueprints
+
+`blueprints` are global, pre-configured workflow templates (e.g., standard Hiring Process, Bill Approval, Procurement) that serve as a foundation for generating organization-specific pipelines.
+
+### How to use blueprints as a baseline:
+
+1. **Discover blueprints**: Call `list_blueprints()` to find an existing blueprint matching the required business process.
+2. **Fetch baseline configuration**: Call `get_blueprint(blueprint_id)` to retrieve the full baseline `pipeline_config` JSON.
+3. **Customize the baseline**:
+   - Do **NOT** invent UUIDs for members or fields.
+   - Fetch the active custom fields for the current organization using `list_custom_fields()` and replace generic inputs with the correct `custom_field_id` (e.g., matching the `department` or `priority` field).
+   - Fetch real workgroups and members using `list_workgroups()` and `list_members()` to map assignment targets in approval/task nodes.
+4. **Instantiate directly**: Alternatively, call `instantiate_blueprint(blueprint_id)` to automatically create a template copy in the organization, then use `update_pipeline` for post-instantiation adjustments.
+
+
 ## Validation Rules
 
 The engine and related services validate several things before a pipeline is accepted or launched.

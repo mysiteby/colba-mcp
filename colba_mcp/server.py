@@ -577,6 +577,43 @@ def get_mcp_update_log_resource() -> str:
     return "Update log file not found."
 
 
+@mcp.tool()
+async def list_blueprints(category: Optional[str] = None, query: Optional[str] = None) -> Any:
+    """
+    List all available workflow pipeline blueprints that can be instantiated.
+    category: Optional category filter (e.g. 'finance', 'hr', 'it').
+    query: Optional search query.
+    Returns: A list of blueprints with their details and base configurations.
+    """
+    async def _call(client: ColbaClient):
+        return await client.list_blueprints(category, query)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def get_blueprint(blueprint_id: str) -> Any:
+    """
+    Retrieve the full configuration of a specific pipeline blueprint.
+    blueprint_id: UUID of the blueprint.
+    Returns: Complete blueprint details including its pipeline_config baseline.
+    """
+    async def _call(client: ColbaClient):
+        return await client.get_blueprint(blueprint_id)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def instantiate_blueprint(blueprint_id: str) -> Any:
+    """
+    Create a new pipeline template in the current organization based on a blueprint.
+    blueprint_id: UUID of the blueprint to instantiate.
+    Returns: Status of the instantiation and the created template_id (requires approval).
+    """
+    async def _call(client: ColbaClient):
+        return await client.instantiate_blueprint(blueprint_id)
+    return await handle_mcp_call(_call)
+
+
 # ---------------------------------------------------------------------------
 # Resources & Prompts
 # ---------------------------------------------------------------------------

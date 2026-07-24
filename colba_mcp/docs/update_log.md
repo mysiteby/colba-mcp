@@ -8,10 +8,10 @@ This document tracks updates, new tools, and changes made to the Colba Model Con
 
 ---
 
-## [2026-07-24] - 6 New Tools & Master Data Access
+## [2026-07-24] - 9 New Tools, Master Data, & Blueprints Support
 
 ### 📢 CRITICAL: Restart Required
-We have added 6 new tools to the MCP server. If you do not see them in your current session, **please restart your client (Claude Desktop / Cursor) or restart the MCP connection.**
+We have added 9 new tools to the MCP server. If you do not see them in your current session, **please restart your client (Claude Desktop / Cursor) or restart the MCP connection.**
 
 ### 🆕 New Tools Added
 
@@ -40,6 +40,19 @@ We have added 6 new tools to the MCP server. If you do not see them in your curr
 #### 6. `update_custom_field`
 * **Purpose**: Edit settings, display labels, or select options for an existing custom/global field.
 * **Benefit**: Modifies fields without breaking `custom_field_id` references in active pipelines.
+
+#### 7. `list_blueprints`
+* **Purpose**: List available global pipeline blueprints/templates.
+* **Parameters**: `category` (optional), `query` (optional).
+* **Usage**: Discover ready-to-use workflows (like Hiring Process, Bill Approval) to use as a baseline.
+
+#### 8. `get_blueprint`
+* **Purpose**: Fetch the complete JSON baseline config of a specific blueprint.
+* **Usage**: Retrieve the original blueprint JSON configuration before modifying and creating a pipeline template.
+
+#### 9. `instantiate_blueprint`
+* **Purpose**: Instantiate a blueprint directly into a new template in the active organization.
+* **Returns**: The created pipeline template_id.
 
 ---
 

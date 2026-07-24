@@ -168,6 +168,27 @@ async def test_colba_client_integration_flow():
         )
     )
 
+    # N. Mock blueprints endpoints
+    blueprint_id = "00000000-0000-0000-0000-000000000010"
+    respx.get(f"{api_url}/api/v1/blueprints/").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"id": blueprint_id, "name": "Standard Hiring", "category": "HR"}]
+        )
+    )
+    respx.get(f"{api_url}/api/v1/blueprints/{blueprint_id}").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": blueprint_id, "name": "Standard Hiring", "config": {}}
+        )
+    )
+    respx.post(f"{api_url}/api/v1/blueprints/{blueprint_id}/instantiate").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "success", "template_id": template_id}
+        )
+    )
+
     # Execute client flow
     # A. List pipelines
     pipelines = await client.list_pipelines()
@@ -234,6 +255,18 @@ async def test_colba_client_integration_flow():
     # M. Update custom field
     update_field_res = await client.update_custom_field(field_id, {"label": "New Label"})
     assert update_field_res["status"] == "updated"
+
+    # N. Blueprints verification
+    blueprints = await client.list_blueprints()
+    assert len(blueprints) == 1
+    assert blueprints[0]["name"] == "Standard Hiring"
+
+    blueprint_detail = await client.get_blueprint(blueprint_id)
+    assert blueprint_detail["name"] == "Standard Hiring"
+
+    instantiate_res = await client.instantiate_blueprint(blueprint_id)
+    assert instantiate_res["status"] == "success"
+    assert instantiate_res["template_id"] == template_id
 
     await client.close()
 

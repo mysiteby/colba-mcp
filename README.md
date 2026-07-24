@@ -192,6 +192,25 @@ The MCP server exposes the following tools to AI agents:
 *Retrieve the update log and changelog of the Colba MCP server.*
 * **Example prompt**: *"Show recent MCP server updates and changelog"*
 
+### 17. `list_blueprints`
+*List all available workflow pipeline blueprints that can be instantiated.*
+* **Parameters**:
+  - `category` (string, optional): Filter by category.
+  - `query` (string, optional): Search query to filter by name.
+* **Example prompt**: *"Show all HR blueprints"*
+
+### 18. `get_blueprint`
+*Retrieve the full configuration of a specific pipeline blueprint.*
+* **Parameters**:
+  - `blueprint_id` (string, UUID): Blueprint identifier.
+* **Example prompt**: *"Get details for blueprint 'xyz'"*
+
+### 19. `instantiate_blueprint`
+*Create a new pipeline template in the current organization based on a blueprint.*
+* **Parameters**:
+  - `blueprint_id` (string, UUID): Blueprint identifier.
+* **Example prompt**: *"Create template from blueprint 'abc'"*
+
 ---
 
 ## 📚 Resources
