@@ -152,6 +152,10 @@ The MCP server exposes the following tools to AI agents:
   - `description` (string, optional): Human-readable summary.
 * **Example prompt**: *"Create a new travel request pipeline template with manager approval and budget verification nodes"*
 
+### 10. `list_custom_fields`
+*Retrieve all registered global custom fields in the organization.*
+* **Example prompt**: *"Show all custom fields configured in the system"*
+
 ---
 
 ## 📚 Resources

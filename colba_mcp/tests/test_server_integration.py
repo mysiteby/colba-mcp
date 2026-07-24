@@ -103,6 +103,30 @@ async def test_colba_client_integration_flow():
         )
     )
 
+    # 9. Mock resolve_mcp_approval
+    respx.post(f"{api_url}/api/v1/mcp/approvals/action").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "approved", "id": "00000000-0000-0000-0000-000000000005"}
+        )
+    )
+
+    # H. Mock list_custom_fields
+    respx.get(f"{api_url}/api/v1/workflow/fields").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "00000000-0000-0000-0000-000000000006",
+                    "name": "department",
+                    "label": "Department",
+                    "type": "select",
+                    "options": {"source": "departments"}
+                }
+            ]
+        )
+    )
+
     # Execute client flow
     # A. List pipelines
     pipelines = await client.list_pipelines()
@@ -134,4 +158,18 @@ async def test_colba_client_integration_flow():
     decision_res = await client.submit_decision(request_id, "approved", "Approved by integration test")
     assert decision_res["status"] == "decision_recorded"
 
+    # G. Resolve MCP approval
+    resolve_res = await client.resolve_mcp_approval(
+        action="approve",
+        approval_id="00000000-0000-0000-0000-000000000005",
+        session_key="tk_session_mock"
+    )
+    assert resolve_res["status"] == "approved"
+
+    # H. List custom fields
+    fields = await client.list_custom_fields()
+    assert len(fields) == 1
+    assert fields[0]["name"] == "department"
+
     await client.close()
+

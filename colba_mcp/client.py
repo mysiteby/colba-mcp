@@ -181,6 +181,19 @@ class ColbaClient:
         response.raise_for_status()
         return response.json()
 
+    async def list_custom_fields(self) -> List[Dict[str, Any]]:
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        response = await self.client.get(
+            "/api/v1/workflow/fields",
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def create_custom_field(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         await self._ensure_org_id()
         headers = {}

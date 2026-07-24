@@ -95,9 +95,15 @@ async def list_pipelines() -> Any:
     """
     Get a list of available workflow templates/pipelines that can be started.
     Returns: List of pipeline templates with their required header schemas.
+    Note: Always use the 'id' field (and not the legacy 'pipeline_id' field) to start a process or archive a pipeline.
     """
     async def _call(client: ColbaClient):
-        return await client.list_pipelines()
+        pipelines = await client.list_pipelines()
+        for p in pipelines:
+            p.pop("pipeline_id", None)
+            if isinstance(p.get("pipeline_config"), dict):
+                p["pipeline_config"].pop("pipeline_id", None)
+        return pipelines
     return await handle_mcp_call(_call)
 
 
@@ -264,6 +270,17 @@ async def delete_workgroup(workgroup_id: str) -> Any:
     """
     async def _call(client: ColbaClient):
         return await client.delete_workgroup(workgroup_id)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def list_custom_fields() -> Any:
+    """
+    List all registered global custom fields in the organization.
+    Returns: A list of custom fields with their ID, name, label, type, validation, and options.
+    """
+    async def _call(client: ColbaClient):
+        return await client.list_custom_fields()
     return await handle_mcp_call(_call)
 
 
