@@ -509,6 +509,38 @@ async def update_pipeline(
 
 
 @mcp.tool()
+async def get_pipeline_embed(template_id: str) -> Any:
+    """Read public form widget status and the ready-to-paste script tag."""
+    async def _call(client: ColbaClient):
+        return await client.get_pipeline_embed(template_id)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def enable_pipeline_embed(template_id: str) -> Any:
+    """Create or enable the public form widget for an active form_start pipeline."""
+    async def _call(client: ColbaClient):
+        return await client.enable_pipeline_embed(template_id)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def refresh_pipeline_embed(template_id: str) -> Any:
+    """Regenerate the static public form widget from the current pipeline config."""
+    async def _call(client: ColbaClient):
+        return await client.refresh_pipeline_embed(template_id)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
+async def disable_pipeline_embed(template_id: str) -> Any:
+    """Disable the public form widget and remove its static JavaScript file."""
+    async def _call(client: ColbaClient):
+        return await client.disable_pipeline_embed(template_id)
+    return await handle_mcp_call(_call)
+
+
+@mcp.tool()
 async def update_custom_field(
     field_id: str,
     name: Optional[str] = None,
@@ -664,5 +696,4 @@ def generate_pipeline_json(user_requirements: str) -> str:
         f"```markdown\n{doc_content}\n```\n\n"
         f"Output ONLY valid JSON matching the specification."
     )
-
 

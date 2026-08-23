@@ -8,6 +8,18 @@ This document tracks updates, new tools, and changes made to the Colba Model Con
 
 ---
 
+## [2026-08-23] - Public pipeline form widgets for MCP agents
+
+Added `get_pipeline_embed`, `enable_pipeline_embed`, `refresh_pipeline_embed`,
+and `disable_pipeline_embed`. Agents can manage the self-contained JavaScript
+widget generated from a pipeline's `form_start` node and obtain the ready-to-
+paste `script_tag`. The widget contains no credentials; publication mutations
+may require HITL approval in the main Colba API.
+
+The `form_start` node must be the pipeline `start_node_id`. Form changes
+regenerate the widget automatically. Restart the MCP client or reload the MCP
+connection to expose the new tool schemas.
+
 ## [2026-07-24] - 9 New Tools, Master Data, & Blueprints Support
 
 ### 📢 CRITICAL: Restart Required

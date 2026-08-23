@@ -378,6 +378,38 @@ class ColbaClient:
         response.raise_for_status()
         return response.json()
 
+    async def get_pipeline_embed(self, template_id: str) -> Dict[str, Any]:
+        validate_uuid(template_id, "template_id")
+        await self._ensure_org_id()
+        headers = {"X-Organization-ID": self.org_id} if self.org_id else {}
+        response = await self.client.get(f"/api/v1/templates/{template_id}/embed", headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+    async def enable_pipeline_embed(self, template_id: str) -> Dict[str, Any]:
+        validate_uuid(template_id, "template_id")
+        await self._ensure_org_id()
+        headers = {"X-Organization-ID": self.org_id} if self.org_id else {}
+        response = await self.client.post(f"/api/v1/templates/{template_id}/embed", headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+    async def refresh_pipeline_embed(self, template_id: str) -> Dict[str, Any]:
+        validate_uuid(template_id, "template_id")
+        await self._ensure_org_id()
+        headers = {"X-Organization-ID": self.org_id} if self.org_id else {}
+        response = await self.client.post(f"/api/v1/templates/{template_id}/embed/refresh", headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+    async def disable_pipeline_embed(self, template_id: str) -> Dict[str, Any]:
+        validate_uuid(template_id, "template_id")
+        await self._ensure_org_id()
+        headers = {"X-Organization-ID": self.org_id} if self.org_id else {}
+        response = await self.client.post(f"/api/v1/templates/{template_id}/embed/disable", headers=headers)
+        response.raise_for_status()
+        return response.json()
+
     async def update_custom_field(self, field_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         validate_uuid(field_id, "field_id")
         await self._ensure_org_id()
@@ -479,5 +511,4 @@ class ColbaClient:
         )
         response.raise_for_status()
         return response.json()
-
 

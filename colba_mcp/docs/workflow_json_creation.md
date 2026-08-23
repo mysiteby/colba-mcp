@@ -88,6 +88,7 @@ Rules:
 The codebase currently supports these practical node families:
 
 - `collect_input`
+- `form_start` (public launch form and pipeline entry point)
 - `approval_request`
 - `task`
 - `condition`
@@ -119,6 +120,18 @@ Common config fields:
 - `recipient_member_id`
 - `form_id`
 - `label`
+
+### `form_start`
+
+Use this node for a public website form. It must be the pipeline's
+`start_node_id`, and a pipeline may contain only one. Its `config` owns the
+public fields and may include `title`, `description`, `submit_label`,
+`success_message`, `fields`, and `required_fields`.
+
+For an active pipeline, agents can use `get_pipeline_embed` to obtain the
+ready-to-paste `script_tag`, then use `enable_pipeline_embed`,
+`refresh_pipeline_embed`, or `disable_pipeline_embed` to manage publication.
+Never place credentials, bearer tokens, or organization secrets in the widget.
 
 ### Field types for `fields[]`
 

@@ -152,6 +152,13 @@ The MCP server exposes the following tools to AI agents:
   - `description` (string, optional): Human-readable summary.
 * **Example prompt**: *"Create a new travel request pipeline template with manager approval and budget verification nodes"*
 
+### Public pipeline form widgets
+
+Agents can manage a public `form_start` widget with `get_pipeline_embed`,
+`enable_pipeline_embed`, `refresh_pipeline_embed`, and
+`disable_pipeline_embed`. `get_pipeline_embed` returns the ready-to-paste
+`script_tag`; the generated script contains no credentials.
+
 ### 10. `list_custom_fields`
 *Retrieve all registered global custom fields in the organization.*
 * **Example prompt**: *"Show all custom fields configured in the system"*

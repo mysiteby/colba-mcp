@@ -270,3 +270,38 @@ async def test_colba_client_integration_flow():
 
     await client.close()
 
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_pipeline_embed_client_flow():
+    api_url = "http://localhost:9000"
+    template_id = "00000000-0000-0000-0000-000000000001"
+    org_id = "00000000-0000-0000-0000-000000000004"
+    client = ColbaClient(api_url=api_url, token="tk_live_test_embed_token")
+    client.org_id = org_id
+    embed = {
+        "enabled": True,
+        "template_id": template_id,
+        "public_id": "ep_abcdefghijklmnop",
+        "widget_version": 3,
+        "script_tag": f'<script async src="{api_url}/widgets/ep_abcdefghijklmnop.js"></script>',
+    }
+    respx.get(f"{api_url}/api/v1/templates/{template_id}/embed").mock(
+        return_value=httpx.Response(200, json=embed)
+    )
+    respx.post(f"{api_url}/api/v1/templates/{template_id}/embed").mock(
+        return_value=httpx.Response(201, json=embed)
+    )
+    respx.post(f"{api_url}/api/v1/templates/{template_id}/embed/refresh").mock(
+        return_value=httpx.Response(200, json=embed)
+    )
+    respx.post(f"{api_url}/api/v1/templates/{template_id}/embed/disable").mock(
+        return_value=httpx.Response(200, json={**embed, "enabled": False})
+    )
+
+    assert (await client.get_pipeline_embed(template_id))["widget_version"] == 3
+    assert (await client.enable_pipeline_embed(template_id))["enabled"] is True
+    assert (await client.refresh_pipeline_embed(template_id))["public_id"] == "ep_abcdefghijklmnop"
+    assert (await client.disable_pipeline_embed(template_id))["enabled"] is False
+    assert all(call.request.headers["X-Organization-ID"] == org_id for call in respx.calls)
+    await client.close()
