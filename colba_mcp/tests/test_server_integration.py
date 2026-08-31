@@ -39,7 +39,7 @@ async def test_colba_client_integration_flow():
         )
     )
 
-    # 4. Mock start_process (checks that X-Organization-ID header is correctly passed)
+    # 4. Mock start_process (checks that required request headers are passed)
     respx.post(f"{api_url}/api/v1/workflow/start/{template_id}").mock(
         return_value=httpx.Response(
             201,
@@ -135,6 +135,32 @@ async def test_colba_client_integration_flow():
         )
     )
 
+    # I2. Mock job-title CRUD endpoints
+    respx.get(f"{api_url}/api/v1/directory/options").mock(
+        return_value=httpx.Response(
+            200,
+            json={"system_roles": ["admin", "member"], "job_titles": ["Accountant"]},
+        )
+    )
+    respx.post(f"{api_url}/api/v1/directory/job-titles").mock(
+        return_value=httpx.Response(
+            201,
+            json={"status": "success", "job_title": "Legal Counsel"},
+        )
+    )
+    respx.put(f"{api_url}/api/v1/directory/job-titles/Accountant").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "success", "job_title": "Finance Lead"},
+        )
+    )
+    respx.delete(f"{api_url}/api/v1/directory/job-titles/Finance%20Lead").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "success"},
+        )
+    )
+
     # J. Mock list_workgroups
     respx.get(f"{api_url}/api/v1/directory/tree").mock(
         return_value=httpx.Response(
@@ -199,6 +225,9 @@ async def test_colba_client_integration_flow():
     start_res = await client.start_process(template_id, {"amount": 1500})
     assert start_res["process_id"] == process_id
     assert client.org_id == org_id
+    start_request = respx.calls.last.request
+    assert start_request.headers["X-Organization-ID"] == org_id
+    assert start_request.headers["Idempotency-Key"]
 
     # C. List active processes
     processes = await client.list_processes(status="active")
@@ -237,6 +266,19 @@ async def test_colba_client_integration_flow():
     members = await client.list_members()
     assert len(members) == 1
     assert members[0]["full_name"] == "Alice Smith"
+
+    # I2. Job-title CRUD
+    job_titles = await client.list_job_titles()
+    assert job_titles == ["Accountant"]
+
+    created_title = await client.create_job_title("Legal Counsel")
+    assert created_title["job_title"] == "Legal Counsel"
+
+    renamed_title = await client.update_job_title("Accountant", "Finance Lead")
+    assert renamed_title["job_title"] == "Finance Lead"
+
+    deleted_title = await client.delete_job_title("Finance Lead")
+    assert deleted_title["status"] == "success"
 
     # J. List workgroups
     workgroups = await client.list_workgroups()
@@ -279,29 +321,123 @@ async def test_pipeline_embed_client_flow():
     org_id = "00000000-0000-0000-0000-000000000004"
     client = ColbaClient(api_url=api_url, token="tk_live_test_embed_token")
     client.org_id = org_id
-    embed = {
+
+    embed_response = {
         "enabled": True,
         "template_id": template_id,
         "public_id": "ep_abcdefghijklmnop",
         "widget_version": 3,
+        "widget_url": f"{api_url}/widgets/ep_abcdefghijklmnop.js",
+        "submit_url": f"{api_url}/api/v1/embed/ep_abcdefghijklmnop/submit",
         "script_tag": f'<script async src="{api_url}/widgets/ep_abcdefghijklmnop.js"></script>',
     }
     respx.get(f"{api_url}/api/v1/templates/{template_id}/embed").mock(
-        return_value=httpx.Response(200, json=embed)
+        return_value=httpx.Response(200, json=embed_response)
     )
     respx.post(f"{api_url}/api/v1/templates/{template_id}/embed").mock(
-        return_value=httpx.Response(201, json=embed)
+        return_value=httpx.Response(201, json=embed_response)
     )
     respx.post(f"{api_url}/api/v1/templates/{template_id}/embed/refresh").mock(
-        return_value=httpx.Response(200, json=embed)
+        return_value=httpx.Response(200, json=embed_response)
     )
     respx.post(f"{api_url}/api/v1/templates/{template_id}/embed/disable").mock(
-        return_value=httpx.Response(200, json={**embed, "enabled": False})
+        return_value=httpx.Response(200, json={**embed_response, "enabled": False})
     )
 
-    assert (await client.get_pipeline_embed(template_id))["widget_version"] == 3
-    assert (await client.enable_pipeline_embed(template_id))["enabled"] is True
+    assert (await client.get_pipeline_embed(template_id))["script_tag"].startswith("<script")
+    assert (await client.enable_pipeline_embed(template_id))["widget_version"] == 3
     assert (await client.refresh_pipeline_embed(template_id))["public_id"] == "ep_abcdefghijklmnop"
     assert (await client.disable_pipeline_embed(template_id))["enabled"] is False
-    assert all(call.request.headers["X-Organization-ID"] == org_id for call in respx.calls)
+    assert all(
+        call.request.headers["X-Organization-ID"] == org_id
+        for call in respx.calls
+    )
     await client.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_colba_client_super_process_integration():
+    api_url = "http://localhost:9000"
+    template_id = "00000000-0000-0000-0000-000000000001"
+    super_process_id = "00000000-0000-0000-0000-000000000005"
+    org_id = "00000000-0000-0000-0000-000000000004"
+    client = ColbaClient(api_url=api_url, token="tk_live_test_super_token")
+    client.org_id = org_id
+
+    # 1. Mock get_compatible_batch_templates
+    respx.get(f"{api_url}/api/v1/workflow/super-processes/compatible-templates").mock(
+        return_value=httpx.Response(200, json=[
+            {
+                "id": template_id,
+                "name": "Shaft Machining",
+                "is_batch_compatible": True,
+                "incompatibility_reason": None,
+            }
+        ])
+    )
+
+    # 2. Mock create_super_process
+    respx.post(f"{api_url}/api/v1/workflow/super-processes").mock(
+        return_value=httpx.Response(201, json={
+            "id": super_process_id,
+            "title": "Batch #1042",
+            "status": "in_progress",
+            "counts": {"total_items": 1, "completed": 0, "running": 1},
+        })
+    )
+
+    # 3. Mock list_super_processes
+    respx.get(f"{api_url}/api/v1/workflow/super-processes").mock(
+        return_value=httpx.Response(200, json={
+            "items": [
+                {
+                    "id": super_process_id,
+                    "title": "Batch #1042",
+                    "status": "in_progress",
+                    "counts": {"total_items": 1, "completed": 0, "running": 1},
+                }
+            ],
+            "total": 1,
+            "limit": 50,
+            "offset": 0,
+        })
+    )
+
+    # 4. Mock get_super_process
+    respx.get(f"{api_url}/api/v1/workflow/super-processes/{super_process_id}").mock(
+        return_value=httpx.Response(200, json={
+            "id": super_process_id,
+            "title": "Batch #1042",
+            "status": "in_progress",
+            "counts": {"total_items": 1, "completed": 0, "running": 1},
+            "items": [
+                {
+                    "id": "00000000-0000-0000-0000-000000000006",
+                    "ordinal": 0,
+                    "template_name": "Shaft Machining",
+                    "status": "started",
+                    "current_stage_label": "Operator Form",
+                }
+            ],
+        })
+    )
+
+    compat = await client.get_compatible_batch_templates()
+    assert len(compat) == 1
+    assert compat[0]["is_batch_compatible"] is True
+
+    created = await client.create_super_process(title="Batch #1042", template_ids=[template_id])
+    assert created["id"] == super_process_id
+
+    listed = await client.list_super_processes()
+    assert listed["total"] == 1
+    assert listed["items"][0]["title"] == "Batch #1042"
+
+    detail = await client.get_super_process(super_process_id)
+    assert detail["id"] == super_process_id
+    assert len(detail["items"]) == 1
+    assert detail["items"][0]["current_stage_label"] == "Operator Form"
+
+    await client.close()
+

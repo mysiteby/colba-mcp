@@ -1,6 +1,8 @@
 import re
+import uuid
 import httpx
 import logging
+from urllib.parse import quote
 from typing import Optional, Any, Dict, List
 
 logger = logging.getLogger(__name__)
@@ -45,20 +47,24 @@ class ColbaClient:
                     logger.info("Resolved organization ID for MCP session")
                 else:
                     raise Exception("No active organization found for this member.")
-            elif response.status_code == 401:
-                raise Exception("Authentication failed. Invalid COLBA_TOKEN.")
             else:
-                raise Exception(
-                    f"Failed to resolve organization context. Status code: {response.status_code}"
-                )
+                # Raise HTTPStatusError so handle_mcp_call maps 401→unauthorized, 403→forbidden, etc.
+                response.raise_for_status()
+        except httpx.HTTPStatusError:
+            raise
         except httpx.HTTPError:
             # Do NOT include the URL in the message — it may contain auth details
             raise Exception("Failed to contact Colba API to resolve organization context.")
 
-    async def list_pipelines(self) -> List[Dict[str, Any]]:
-        response = await self.client.get("/api/v1/templates")
+
+    async def list_pipelines(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        params = {}
+        if status:
+            params["status"] = status
+        response = await self.client.get("/api/v1/templates", params=params)
         response.raise_for_status()
         return response.json()
+
 
     async def list_processes(
         self,
@@ -109,9 +115,28 @@ class ColbaClient:
         headers = {}
         if self.org_id:
             headers["X-Organization-ID"] = self.org_id
+        # Process starts require an Idempotency-Key. Generate it once per tool
+        # invocation so a transport retry can safely reuse the same request key.
+        headers["Idempotency-Key"] = str(uuid.uuid4())
         response = await self.client.post(
             f"/api/v1/workflow/start/{template_id}",
             json=payload,
+            headers=headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def validate_process_input(
+        self, template_id: str, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        validate_uuid(template_id, "template_id")
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+        response = await self.client.post(
+            f"/api/v1/workflow/validate-input/{template_id}",
+            json={"payload": payload},
             headers=headers,
         )
         response.raise_for_status()
@@ -176,6 +201,39 @@ class ColbaClient:
             
         response = await self.client.delete(
             f"/api/v1/directory/workgroups/{workgroup_id}",
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def update_workgroup(
+        self,
+        workgroup_id: str,
+        name: Optional[str] = None,
+        type: Optional[str] = None,
+        parent_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        validate_uuid(workgroup_id, "workgroup_id")
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        payload: Dict[str, Any] = {}
+        if name is not None:
+            payload["name"] = name
+        if type is not None:
+            payload["type"] = type
+        if parent_id is not None:
+            if parent_id != "":
+                validate_uuid(parent_id, "parent_id")
+                payload["parent_id"] = parent_id
+            else:
+                payload["parent_id"] = None
+
+        response = await self.client.put(
+            f"/api/v1/directory/workgroups/{workgroup_id}",
+            json=payload,
             headers=headers
         )
         response.raise_for_status()
@@ -262,6 +320,100 @@ class ColbaClient:
         response = await self.client.delete(
             f"/api/v1/accounting/vendors/{vendor_id}",
             headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def update_vendor(self, vendor_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        validate_uuid(vendor_id, "vendor_id")
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        response = await self.client.put(
+            f"/api/v1/accounting/vendors/{vendor_id}",
+            json=payload,
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def update_member(self, member_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        validate_uuid(member_id, "member_id")
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+            
+        response = await self.client.put(
+            f"/api/v1/directory/members/{member_id}",
+            json=payload,
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def list_job_titles(self) -> List[str]:
+        """List organization job titles (business positions, not access roles)."""
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+
+        response = await self.client.get(
+            "/api/v1/directory/options",
+            headers=headers,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        titles = payload.get("job_titles", []) if isinstance(payload, dict) else []
+        if not isinstance(titles, list):
+            raise ValueError("Colba API returned an invalid job_titles list")
+        return titles
+
+    async def create_job_title(self, name: str) -> Dict[str, Any]:
+        """Create an organization job title."""
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+
+        response = await self.client.post(
+            "/api/v1/directory/job-titles",
+            json={"name": name},
+            headers=headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def update_job_title(self, current_name: str, new_name: str) -> Dict[str, Any]:
+        """Rename an organization job title and update assigned members."""
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+
+        encoded_name = quote(current_name, safe="")
+        response = await self.client.put(
+            f"/api/v1/directory/job-titles/{encoded_name}",
+            json={"name": new_name},
+            headers=headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def delete_job_title(self, name: str) -> Dict[str, Any]:
+        """Delete an organization job title and clear it from assigned members."""
+        await self._ensure_org_id()
+        headers = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+
+        encoded_name = quote(name, safe="")
+        response = await self.client.delete(
+            f"/api/v1/directory/job-titles/{encoded_name}",
+            headers=headers,
         )
         response.raise_for_status()
         return response.json()
@@ -379,10 +531,14 @@ class ColbaClient:
         return response.json()
 
     async def get_pipeline_embed(self, template_id: str) -> Dict[str, Any]:
+        """Read public-form widget status and the ready-to-paste script tag."""
         validate_uuid(template_id, "template_id")
         await self._ensure_org_id()
         headers = {"X-Organization-ID": self.org_id} if self.org_id else {}
-        response = await self.client.get(f"/api/v1/templates/{template_id}/embed", headers=headers)
+        response = await self.client.get(
+            f"/api/v1/templates/{template_id}/embed",
+            headers=headers,
+        )
         response.raise_for_status()
         return response.json()
 
@@ -390,7 +546,10 @@ class ColbaClient:
         validate_uuid(template_id, "template_id")
         await self._ensure_org_id()
         headers = {"X-Organization-ID": self.org_id} if self.org_id else {}
-        response = await self.client.post(f"/api/v1/templates/{template_id}/embed", headers=headers)
+        response = await self.client.post(
+            f"/api/v1/templates/{template_id}/embed",
+            headers=headers,
+        )
         response.raise_for_status()
         return response.json()
 
@@ -398,7 +557,10 @@ class ColbaClient:
         validate_uuid(template_id, "template_id")
         await self._ensure_org_id()
         headers = {"X-Organization-ID": self.org_id} if self.org_id else {}
-        response = await self.client.post(f"/api/v1/templates/{template_id}/embed/refresh", headers=headers)
+        response = await self.client.post(
+            f"/api/v1/templates/{template_id}/embed/refresh",
+            headers=headers,
+        )
         response.raise_for_status()
         return response.json()
 
@@ -406,7 +568,10 @@ class ColbaClient:
         validate_uuid(template_id, "template_id")
         await self._ensure_org_id()
         headers = {"X-Organization-ID": self.org_id} if self.org_id else {}
-        response = await self.client.post(f"/api/v1/templates/{template_id}/embed/disable", headers=headers)
+        response = await self.client.post(
+            f"/api/v1/templates/{template_id}/embed/disable",
+            headers=headers,
+        )
         response.raise_for_status()
         return response.json()
 
@@ -492,22 +657,114 @@ class ColbaClient:
         self,
         name: str,
         pipeline_config: Dict[str, Any],
-        description: Optional[str] = None
+        description: Optional[str] = None,
+        is_draft: Optional[bool] = None,
+        is_active: Optional[bool] = None,
     ) -> Dict[str, Any]:
         await self._ensure_org_id()
         headers = {}
         if self.org_id:
             headers["X-Organization-ID"] = self.org_id
 
-        payload = {
+        payload: Dict[str, Any] = {
             "name": name,
             "description": description or "",
             "pipeline_config": pipeline_config,
         }
+        if is_draft is not None:
+            payload["is_draft"] = is_draft
+        if is_active is not None:
+            payload["is_active"] = is_active
+
         response = await self.client.post(
             "/api/v1/templates/",
             json=payload,
             headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+    async def list_mcp_approvals(self) -> List[Dict[str, Any]]:
+        await self._ensure_org_id()
+        headers: Dict[str, str] = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+        response = await self.client.get(
+            "/api/v1/mcp/approvals/pending",
+            headers=headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def get_compatible_batch_templates(self) -> List[Dict[str, Any]]:
+        await self._ensure_org_id()
+        headers: Dict[str, str] = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+        response = await self.client.get(
+            "/api/v1/workflow/super-processes/compatible-templates",
+            headers=headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def create_super_process(
+        self,
+        title: str,
+        template_ids: List[str],
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        await self._ensure_org_id()
+        for tid in template_ids:
+            validate_uuid(tid, "template_ids item")
+        headers: Dict[str, str] = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+        key = idempotency_key or f"mcp-super-{uuid.uuid4()}"
+        headers["Idempotency-Key"] = key
+
+        response = await self.client.post(
+            "/api/v1/workflow/super-processes",
+            json={"title": title, "template_ids": template_ids},
+            headers=headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def list_super_processes(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        search: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        await self._ensure_org_id()
+        headers: Dict[str, str] = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        if search:
+            params["search"] = search
+        if status:
+            params["status"] = status
+        response = await self.client.get(
+            "/api/v1/workflow/super-processes",
+            params=params,
+            headers=headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def get_super_process(self, super_process_id: str) -> Dict[str, Any]:
+        validate_uuid(super_process_id, "super_process_id")
+        await self._ensure_org_id()
+        headers: Dict[str, str] = {}
+        if self.org_id:
+            headers["X-Organization-ID"] = self.org_id
+        response = await self.client.get(
+            f"/api/v1/workflow/super-processes/{super_process_id}",
+            headers=headers,
         )
         response.raise_for_status()
         return response.json()
