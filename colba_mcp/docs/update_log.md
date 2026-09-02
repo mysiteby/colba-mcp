@@ -6,6 +6,71 @@ This document tracks updates, new tools, and changes made to the Colba Model Con
 > **MCP Client Schema Reloading**:
 > Since MCP clients (like Claude Desktop, Cursor, or peer agents) cache the tool definitions schema on connection, **you must restart your client (or reload the MCP server)** whenever new tools are added for them to appear in your available tools list.
 
+## [2026-09-02] - Automated Workflow Schedules (Cron Engine & Execution Tools)
+
+### New MCP Tools
+- Added full suite of MCP tools for managing recurring automated workflow execution:
+  - `list_workflow_schedules(template_id, is_active, limit, offset)`: List organization schedules with optional template and active status filtering.
+  - `get_workflow_schedule(schedule_id)`: Retrieve schedule details, next run time, and execution stats.
+  - `create_workflow_schedule(template_id, name, cron_expression, timezone, payload, concurrency_policy, description, is_active)`: Attach automated schedule to template.
+  - `update_workflow_schedule(schedule_id, ...)`: Update schedule properties, cadence, timezone, or payload.
+  - `toggle_workflow_schedule(schedule_id, is_active)`: Pause or resume automated execution.
+  - `delete_workflow_schedule(schedule_id)`: Delete a workflow schedule.
+  - `trigger_workflow_schedule(schedule_id)`: Immediately trigger on-demand execution ("Run Now").
+  - `get_workflow_schedule_runs(schedule_id, limit, offset)`: Inspect execution history, process run IDs, durations, and error logs.
+  - `validate_schedule_cron(cron_expression, timezone, count)`: Validate cron syntax and preview upcoming execution times.
+
+### Agent Guidance
+- When an agent is asked to automate a process on a regular schedule (e.g., daily, hourly, weekly), the agent should first create or select the workflow template, then use `create_workflow_schedule` with the desired cron expression and timezone.
+- Use `validate_schedule_cron` to ensure the cron expression evaluates properly before creating the schedule.
+- Use `trigger_workflow_schedule` to perform an immediate smoke test of the scheduled trigger.
+
+## [2026-09-01] - Member process access rules
+
+### New MCP functionality
+
+- Added `set_pipeline_access(template_id, ...)` for configuring who can see and
+  launch a workflow process.
+- Supported selectors are `all_members`, `department`, `job_title`, and
+  `individual`. Department values may be a workgroup UUID, key, or name; job
+  titles use the organization's business-position name; individual values may
+  be a member UUID or email.
+- The tool updates the root-level pipeline access policy and preserves the
+  graph through an atomic access-only endpoint. It uses
+  the existing pipeline-management authorization and MCP HITL mutation flow.
+- The `view` and `launch` rules are independent. Member catalog results and
+  actual process validation/start are both enforced by the backend. Admin and
+  superadmin members retain full rights.
+- Explicit malformed policies fail closed. Department matching is scoped to
+  `DEPARTMENT` workgroups in the selected organization; UUIDs are preferred.
+
+### Agent guidance
+
+Call `get_pipeline_generation_rules` before creating or changing a pipeline.
+For a member-facing process, prefer `set_pipeline_access` after the template
+exists; use `view_type`/`view_value` for catalog visibility and
+`launch_type`/`launch_value` for launch permission. Do not encode process access
+in `assignment_target`, which is reserved for assigning approval/task work.
+
+When generating the root `pipeline_config.process_access` directly, use the
+normalized persisted shape: `view`/`launch` each contain `type` plus `id` or
+`ids`. Never put `values`, `view_values`, or `launch_values` in the pipeline
+JSON; those names are only MCP tool arguments. Otherwise approval validation
+rejects the mutation with `INVALID_PROCESS_ACCESS`.
+
+Use `view_values` and `launch_values` for multiple targets of one selector type.
+The singular `*_value` arguments remain backward compatible.
+
+> **MCP Client Schema Reloading**:
+> The new tool changes the MCP schema. Restart the MCP client or reload the
+> MCP connection after deployment.
+
+### Local SuperProcess execution notes
+
+- MCP-authenticated stage submissions are accepted at `POST /api/v1/workflow/processes/{process_id}/submit-stage` after the workflow route verifies the active member, initiator, or node assignment.
+- Stage resubmissions use the same canonical validator as launch input, including regex, enum, numeric bounds, visibility/required/forbidden conditions, and `required_together` rules.
+- A schema repair migration (`20260831_sp_idem_fix`) reconciles legacy SuperProcess databases that lack owner-scoped idempotency columns.
+
 ## [2026-08-31] - SuperProcess (Nadprocesy / Batches) Management Tools
 
 ### Purpose & Problem Solved
@@ -15,24 +80,26 @@ Added comprehensive orchestration and telemetry tools for **SuperProcesses (На
 ### New MCP Tools
 
 1. **`get_compatible_super_process_templates`**:
-   - Lists active workflow templates in the organization eligible for zero-payload batch launch.
+   - Lists all active workflow templates with an explicit zero-payload compatibility decision.
    - Evaluates whether starting nodes (`collect_input`, `form_start`) can start without upfront data or if empty payloads `{}` pass schema validation.
 
 2. **`create_super_process`**:
    - Creates and batch-launches a new SuperProcess containing multiple child processes.
    - Parameters:
      - `title`: Human-readable name for the batch/super-process (e.g. `"Production Batch #1042"` or `"Employee Onboarding Suite"`).
-     - `template_ids`: Array of template UUID strings to instantiate.
-     - `idempotency_key` (optional): Unique key for safe idempotent replay.
+     - `template_ids`: Ordered array of 1-50 template UUID strings. Duplicates create multiple instances.
+     - `idempotency_key` (optional): Unique key for safe idempotent replay of the exact same request.
    - Handles partial failure isolation so one failing template does not crash the entire batch.
+   - Retries resume items left pending by an interrupted request; a key reused with different input is rejected.
 
 3. **`list_super_processes`**:
    - Paginated listing with substring search and status filtering.
    - Returns real-time aggregate counts (`total_items`, `running`, `waiting`, `completed`, `failed_to_start`, `failed`, `rejected`, `cancelled`) and computed status (`in_progress`, `completed`, `attention_required`, `partial_failed`) with zero N+1 database queries.
+   - Applies search/status filters before pagination and returns a matching `total`.
 
 4. **`get_super_process`**:
    - Detailed telemetry snapshot for a specific SuperProcess.
-   - Returns overall completion percentage, breakdown metrics, and all child process items with their current workflow stage labels (resolved dynamically from immutable execution pipelines) and direct links/IDs.
+   - Returns breakdown metrics and all child process items with current workflow stage labels (resolved from immutable execution pipelines) and direct links/IDs. UI progress means terminal items divided by total items, not only successful completions.
 
 > [!IMPORTANT]
 > **MCP Client Restart Required**:
@@ -569,3 +636,16 @@ We have added 9 new tools to the MCP server. If you do not see them in your curr
 ## [Older Updates] - Initial Release
 * Baseline MCP server with 9 core tools: `list_pipelines`, `start_process`, `list_processes`, `list_pending_requests`, `get_process_details`, `get_request_details`, `submit_decision`, `get_pipeline_generation_rules`, `create_pipeline`.
 * Added manual MCP approval bypass resolvers for debugging and staging.
+## [2026-08-31] - Agent pipeline safety and execution fixes
+
+- Added the agent execution contract: discover, validate, preview, verify, HITL, apply, and report.
+- Added documentation for `get_organization_context`, `preview_pipeline_changes`,
+  `verify_expected_route`, and `get_pending_approvals`.
+- Documented dynamic field rules (`visible_if`, `required_if`, `forbidden_if`, and
+  `required_together`) and the requirement to reject invalid patterns.
+- Approval execution metadata and agent run persistence now have an Alembic migration.
+- Agent runs now use tenant RLS and append-only, redacted `agent_run_events` instead of growing JSON arrays.
+- Added MCP tools for starting, transitioning, inspecting, and recording agent runs.
+- Route verification now reuses runtime condition semantics and supports `step_results`, action choices,
+  and bounded loopback sequences.
+- Idempotency keys are scoped to a logical attempt; response caching is bounded to 1 MiB.

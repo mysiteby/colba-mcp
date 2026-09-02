@@ -12,8 +12,9 @@ Use it when you need to:
 ## What A Valid Pipeline Looks Like
 
 At minimum, a pipeline config usually contains:
-- `prefix`: short human-readable prefix for generated process numbers,
+- `prefix`: short human-readable two-level prefix for generated process numbers (Scheme B: `[DEPT]-[PROCESS]`, e.g., `FIN-INV`, `HR-ONB`, `IT-ACC`),
 - `start_node_id`: the entry node,
+- `header_schema`: for API-triggered input pipelines, the complete JSON Schema for fields accepted in the initial payload,
 - `is_client_enabled`: optional client portal flag,
 - `nodes`: array of node objects.
 
@@ -21,8 +22,17 @@ Example:
 
 ```json
 {
-  "prefix": "PRC",
+  "prefix": "FIN-INV",
   "start_node_id": "start_1",
+  "header_schema": {
+    "type": "object",
+    "properties": {
+      "article_title": { "type": "string" },
+      "article_body": { "type": "string" }
+    },
+    "required": ["article_title", "article_body"],
+    "additionalProperties": false
+  },
   "is_client_enabled": true,
   "nodes": [
     {
@@ -49,13 +59,76 @@ Example:
 
 - `prefix`: optional, used for process numbering and readable IDs.
 - `start_node_id`: required for a valid executable graph.
+- `header_schema`: required for API-triggered pipelines; it must be a non-empty object schema and describe every article/payload field accepted at launch.
 - `is_client_enabled`: optional boolean for client portal flows.
 - `nodes`: required array of node definitions.
+
+### Process visibility and launch access
+
+For member-facing processes, configure access once at the root of
+`pipeline_config` under `process_access`. Do not store it inside a step config.
+The policy has two independent rules:
+
+```json
+"process_access": {
+  "view": { "type": "department", "ids": ["finance", "legal"] },
+  "launch": { "type": "job_title", "ids": ["Accountant", "Buyer"] }
+}
+```
+
+Supported rule types are:
+
+- `all_members`: all active members of the organization; no `id` is needed;
+- `department`: a department workgroup UUID, key, or name;
+- `job_title`: an organization business position matching `profile.job_title`;
+- `individual`: a member UUID or email address.
+
+Use `id` for one target or `ids` for multiple targets of the same type. A member
+matches when any target matches. Duplicate targets are normalized; empty lists
+and more than 1000 targets are rejected.
+
+**Important agent rule:** in the persisted `pipeline_config.process_access`
+object, always write the normalized `view`/`launch` shape with `type` and
+`ids` (or a single `id`). Do not write `values`, `view_values`, or
+`launch_values` inside the pipeline JSON. Those `*_values` names belong only to
+the `set_pipeline_access` MCP tool arguments; mixing them into a generated
+pipeline config makes create/update approval validation fail with
+`INVALID_PROCESS_ACCESS`.
+
+`view` controls whether a member sees the process in the available-process
+catalog. `launch` controls whether the member may validate and start it.
+Existing processes without `process_access` remain available to all members.
+Administrators and superadmins have full visibility and launch rights.
+An explicitly present but malformed policy is denied (fail-closed) and rejected
+when the template is saved or activated. Prefer a department workgroup UUID over
+a mutable name or key.
+Do not use `assignment_target` for this policy: it assigns approval/task work
+inside an already started process and is a separate concern.
+
+### Automated Recurring Execution (Schedules / Cron)
+
+Workflows can be scheduled to run automatically on a recurring cadence (e.g. daily synchronization, hourly checks, monthly reporting).
+
+Agents can configure and inspect schedules for any workflow template using the following MCP tools:
+- `create_workflow_schedule`: attaches a recurring cron trigger to a template with a specific timezone (`Europe/Warsaw`, `UTC`, `America/New_York`), initial `payload`, and `concurrency_policy` (`allow` or `skip_if_running`).
+- `list_workflow_schedules`: lists all schedules or filters by `template_id`.
+- `update_workflow_schedule`: modifies cadence, payload, timezone, or concurrency policy.
+- `toggle_workflow_schedule`: pauses or resumes an automated schedule.
+- `trigger_workflow_schedule`: executes an immediate test run ("Run Now").
+- `get_workflow_schedule_runs`: inspects run execution history, status (`completed`, `failed`, `skipped`), and linked process instances.
+- `validate_schedule_cron`: verifies cron expression syntax and computes upcoming projected run times.
+
+Supported Cron Syntax:
+- Standard 5-field: `minute hour day-of-month month day-of-week` (e.g. `0 9 * * 1-5` for weekdays at 9:00 AM).
+- Step syntax: `*/15 * * * *` (every 15 minutes).
+- Predefined macros: `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`.
+- Timezone awareness: all schedules calculate exact execution times respecting IANA timezones and daylight saving time (DST) shifts.
 
 ### Node fields
 
 Every node can use:
-- `id`: unique node identifier, preferably semantic and readable.
+- `id`: unique node identifier. For newly generated persisted/API pipelines,
+  prefer UUIDs; keep readable aliases in `semantic_id` instead.
 - `name`: human-facing label.
 - `type`: handler type.
 - `config`: node-specific settings.
@@ -97,6 +170,8 @@ The codebase currently supports these practical node families:
 - `outbound_webhook`
 - `outbound_integration` (legacy)
 - `llm_request`
+- `load_test` (automated k6 stress testing)
+- `wait_for_callback` (pause execution until an external HTTP callback is received)
 - `create_vendor` (legacy)
 - `create_po` (legacy)
 - `create_invoice` (legacy)
@@ -113,6 +188,26 @@ The editor may display some of these under simpler visual buckets, but the JSON 
 
 Use this node to pause the process and collect form data.
 
+The rules for the initial node depend on its type:
+
+- If the start node is `collect_input`, its `config.fields` is the authoritative launch
+  form. For API-triggered launches, copy those fields into the root `header_schema` with
+  matching names, types, and required status. This is the correct shape when the API
+  payload is intended to enter the input form.
+- If the start node is any other type, do not invent a `collect_input` schema. The node
+  must be executable with the launch context it receives, and its required inputs must
+  be declared according to that node type's configuration. For API-triggered launches,
+  any accepted payload fields still must be declared in the root `header_schema`; fields
+  hidden only inside a later `task` are not launch inputs.
+
+A `task` start node is valid for workflows that intentionally begin with a human task,
+but it does not define an input form and cannot be used as a substitute for
+`collect_input` when the launch contract requires form fields.
+
+The `start_node_id` value MUST equal the literal `id` of that node in the `nodes` array
+(usually a UUID if the pipeline was persisted). Never put a semantic name, node label,
+or generated alias there unless that exact value is also the node's `id`.
+
 Common config fields:
 - `fields`
 - `required_fields`
@@ -123,15 +218,82 @@ Common config fields:
 
 ### `form_start`
 
-Use this node for a public website form. It must be the pipeline's
-`start_node_id`, and a pipeline may contain only one. Its `config` owns the
-public fields and may include `title`, `description`, `submit_label`,
-`success_message`, `fields`, and `required_fields`.
+Use this node when the pipeline must be launched by a form embedded on an
+external website. It must be the pipeline's `start_node_id`, and a pipeline
+may contain only one `form_start` node.
 
-For an active pipeline, agents can use `get_pipeline_embed` to obtain the
-ready-to-paste `script_tag`, then use `enable_pipeline_embed`,
-`refresh_pipeline_embed`, or `disable_pipeline_embed` to manage publication.
-Never place credentials, bearer tokens, or organization secrets in the widget.
+The node owns the public form contract. Its `config` may contain `title`,
+`description`, `submit_label`, `success_message`, `fields`, and optional
+`required_fields`. Field definitions use the same names, types, options, and
+required flags as the launch validator.
+
+#### Public-form generation contract
+
+When generating a public-form pipeline, agents MUST treat the form as a
+complete launch contract, not only as a visual node:
+
+- Use exactly one `form_start` node and set `start_node_id` to that node's
+  exact persisted `id`.
+- Generate UUIDs for all new node `id` values and use those same UUID strings in
+  `start_node_id` and transition targets. Keep a human-readable `semantic_id`
+  separately when useful. Do not use `"form_start"`, a node name, or another
+  semantic alias as `start_node_id` when the node has a UUID `id`.
+- Keep the field contract duplicated and synchronized in
+  `form_start.config.fields`, `form_start.config.required_fields`, and the
+  root `header_schema`. Names, types, required flags, and select values must
+  match exactly.
+- Use stable ASCII `snake_case` field names. Labels, descriptions, and
+  presentation text may be localized, but must not be used as payload keys.
+- Add server-side constraints where known: `format: "email"`,
+  `min_length`, `max_length`, `pattern`, and canonical select
+  `options.choices`. Browser validation is only a usability aid; it is not a
+  security boundary.
+- Use machine-stable select values and human-readable labels. Do not make a
+  downstream transition or integration depend on a label that may be renamed.
+- Keep the business payload separate from system metadata. Honeypot fields,
+  `started_at_ms`, `form_meta`, and `idempotency_key` are generated or checked
+  by the widget/endpoint and MUST NOT be added to form fields or
+  `header_schema`.
+- Define the downstream data contract: identify which fields are used by
+  later nodes, notifications, integrations, routing, or analytics. Do not
+  collect a field that has no documented purpose.
+- Do not put credentials, bearer tokens, organization secrets, internal hook
+  URLs, or tenant-private configuration in the public node or widget.
+
+The safest creation shape is therefore:
+
+```json
+{
+  "start_node_id": "550e8400-e29b-41d4-a716-446655440000",
+  "nodes": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "semantic_id": "form_start",
+      "type": "form_start",
+      "config": { "fields": [] },
+      "transitions": { "default": "650e8400-e29b-41d4-a716-446655440000" }
+    },
+    {
+      "id": "650e8400-e29b-41d4-a716-446655440000",
+      "type": "end",
+      "transitions": {}
+    }
+  ]
+}
+```
+
+Do not rely on the graph's semantic-ID normalization to repair this
+relationship. The editor and the persisted pipeline compare the literal
+`start_node_id` with the node `id`; mixing a semantic alias with a persisted
+UUID produces `Start Form node must be the pipeline start node`.
+
+For an active pipeline, Colba generates a self-contained public JavaScript
+widget from this node. Agents can use `get_pipeline_embed` to read the ready-
+to-paste `script_tag`, `enable_pipeline_embed` to publish it, and
+`refresh_pipeline_embed` or `disable_pipeline_embed` to manage publication.
+Changing the pipeline configuration regenerates the widget automatically.
+The public browser form must use the generated widget; agents must not expose
+the bearer-token API trigger or place secrets in the widget.
 
 ### Field types for `fields[]`
 
@@ -143,9 +305,7 @@ Supported field types used by the API/schema layer:
 | `number` | Numeric values | Runtime validates numeric submissions with `float(...)`. |
 | `boolean` | True/false values | Stored in schema as boolean. |
 | `date` | Date or datetime values | Formula functions expect ISO-like date strings. |
-| `select` | One option from a list/source | Use `options.source` for entity-backed values, or `options.choices/options`. |
-| `user` | Member / User selection | Dedicated member picker input field. |
-| `workgroup` | Workgroup / Team selection | Dedicated workgroup picker input field. |
+| `select` | One option from a list/source | Use `options.source` for entity-backed values, or canonical `options.choices` for static values. |
 | `array` | Tables / line items | Use `columns[]`; row formulas are supported. |
 | `file` | File upload fields | If `options.multiple: true`, submitted value must be an array. |
 
@@ -163,11 +323,16 @@ Observed UI-friendly aliases:
 - `type`: one of the supported field types.
 - `required`: blocks submission when missing, unless the field has `formula`.
 - `formula`: computed value expression.
-- `options`: select/file/source metadata.
+- `options`: select/file/source metadata. For static dropdowns the canonical shape is `{"choices": [{"value": "...", "label": "..."}]}`. `options: ["A", "B"]` is accepted as a compact legacy input and is normalized to this shape; agents should emit the canonical shape.
 - `columns`: table/array column definitions.
 - `analytics`: when true, copies submitted value into analytics output.
 - `custom_field_id`: UI/editor reference to an imported global/custom field; not required by the core engine.
 - `x-binding`: семантический тег связывания (semantic binding tag), например, `vendor_id`, `total_amount`, `due_date`. Используется для автоматического сопоставления полей ввода с атрибутами финансовых документов в нодах автоматизации.
+
+For public forms, also record the field's purpose and sensitivity in the
+pipeline design (for example, whether an email or phone value is personal
+data, who may receive it, and how it is used). These are design requirements;
+do not invent unsupported runtime keys in `pipeline_config`.
 
 Example:
 
@@ -191,6 +356,34 @@ Example:
   }
 }
 ```
+
+### Static dropdown fields
+
+Use `type: "select"` and keep both the submitted value and displayed label explicit:
+
+```json
+{
+  "name": "Grade",
+  "label": "Grade",
+  "type": "select",
+  "options": {
+    "choices": [
+      { "value": "Junior", "label": "Junior" },
+      { "value": "Middle", "label": "Middle" },
+      { "value": "Senior", "label": "Senior" },
+      { "value": "Lead", "label": "Lead" },
+      { "value": "Manager", "label": "Manager" }
+    ]
+  }
+}
+```
+
+Rules:
+- static dropdowns must use `options.choices`, not a bare `options` array;
+- every choice must contain a non-empty `value` and `label`;
+- use `options.source` instead of `choices` for organization-backed/dynamic values;
+- do not combine a dynamic `source` with static choices unless the UI explicitly needs a fallback;
+- the field remains `type: "select"` even when the choices list is temporarily empty.
 
 Important behavior:
 - if `required_fields` is missing, the engine derives it from `fields[]` by taking fields where `required` is not `false`,
@@ -229,7 +422,7 @@ Supported target types:
 | `workgroup` | `id` | Assign to all members of a workgroup by UUID or workgroup key. |
 | `department` | `id` | Alias-style workgroup resolution by UUID or key. |
 | `location` | `id` | Alias-style workgroup resolution by UUID or key. |
-| `role` | `id` | Assign to members with this organization role. |
+| `role` | `id` | Assign to members whose `profile.job_title` matches this position. This is not an access-role selector. |
 | `manager` | `of_member_id` | Assign to direct manager of the given member UUID. Use `initiator` to resolve from process initiator. |
 | `manager_manager` | `of_member_id` | Assign to manager's manager. |
 | `grand_manager` | `of_member_id` | Same behavior as `manager_manager`. |
@@ -253,7 +446,7 @@ Examples:
 ```
 
 ```json
-{ "type": "role", "id": "admin" }
+{ "type": "role", "id": "CFO" }
 ```
 
 Assigning to the initiator:
@@ -492,6 +685,7 @@ Supported operations:
 - `set`: Sets a target to a literal value or string template.
 - `copy`: Copies a value from a source path to a target path, retaining its original data type.
 - `concat`: Concatenates multiple sources with an optional separator.
+- `strip_html`: Converts untrusted HTML from `source` into normalized plain text and writes it to `target`; scripts, styles, templates, and comments are discarded.
 - `math`: Evaluates a mathematical expression (using `FormulaService`).
 
 Example:
@@ -520,6 +714,11 @@ Example:
         "separator": ", "
       },
       {
+        "op": "strip_html",
+        "target": "initial_payload.telegram_content.text",
+        "source": "initial_payload.content"
+      },
+      {
         "op": "math",
         "target": "step_results.total_value",
         "expression": "qty * price"
@@ -538,10 +737,16 @@ Example:
 
 Used to make generic synchronous HTTP calls to external systems (CRM, ERP, custom APIs).
 
+For new pipelines, an authenticated external HTTP call MUST be modeled as an
+`outbound_webhook` with `config.auth_secret_name`. Do not use this action mode
+with `Authorization`, `auth_token`, literal credentials, or `{{secrets.*}}`
+placeholders. The legacy environment-variable placeholder mechanism is retained
+only for backward compatibility with existing pipelines.
+
 Config fields:
 - `url`: target URL (supports placeholders)
 - `method`: HTTP verb (`"GET"`, `"POST"`, `"PUT"`, `"DELETE"`)
-- `headers`: headers dictionary (supports secrets placeholders like `{{secrets.API_KEY}}` to prevent committing credentials in JSON configs)
+- `headers`: headers dictionary for non-sensitive/static headers. Do not put credentials or `{{secrets.*}}` placeholders in authenticated outbound requests.
 - `body` or `body_mapping`: payload definition
 - `query_params` or `query_params_mapping`: query parameters
 - `response_mapping`: maps response JSON keys to target context paths
@@ -557,7 +762,6 @@ Example:
     "url": "https://api.hubspot.com/v3/objects/contacts",
     "method": "POST",
     "headers": {
-      "Authorization": "Bearer {{secrets.HUBSPOT_API_KEY}}",
       "Content-Type": "application/json"
     },
     "body_mapping": {
@@ -586,10 +790,10 @@ Example:
 
 #### 3. Integration Mode (`action_type: "integration"`)
 
-Used to route inputs to pre-registered domain operations (`colba.*`) or external ERP adapters (`quickbooks`, `xero`, `softledger`).
+Used to route inputs to pre-registered domain operations (`colba.*`), external ERP adapters (`quickbooks`, `xero`, `softledger`), or the shared Colba Telegram bot.
 
 Config fields:
-- `provider`: integration provider (`"colba"`, `"quickbooks"`, `"xero"`, `"softledger"`)
+- `provider`: integration provider (`"colba"`, `"quickbooks"`, `"xero"`, `"softledger"`, `"telegram"`)
 - `action`: provider-specific method (e.g., `"create_vendor"`, `"create_bill"`, `"post_bill"`)
 - `inputs`: inputs mapped from the context to the adapter requirements
 - `outputs`: output mapping from integration results back to target context paths
@@ -598,6 +802,8 @@ Supported integrations:
 - **`provider: "colba"`**:
   - `action: "create_vendor"` (creates database vendor record; maps to `CreateVendorHandler`)
   - `action: "create_document"` (generic financial document creator; maps to `CreateFinancialDocumentHandler`. Requires `document_type` and supports semantic auto-binding).
+  - `action: "submit_ksef_invoice"` (Polish National e-Invoice System KSeF API v2 submission node. See [KSeF Pipeline Agent Guide](docs/ksef-pipeline-agent-guide.md) or resource `docs://skills/ksef_pipeline_agent_guide`).
+  - `action: "mark_ksef_offline_delivered"` (acknowledges delivery of an offline KSeF invoice so the background worker may submit it later).
   - Shortcut/legacy actions: `create_po`, `create_invoice`, `create_bill`, `create_rfq`, `create_quote`, `create_receipt` (each maps to `CreateFinancialDocumentHandler` and implicitly sets the document type).
 - **`provider: "quickbooks"`**:
   - `action: "create_bill"`
@@ -605,6 +811,117 @@ Supported integrations:
 - **`provider: "xero"` & `provider: "softledger"`**:
   - `action: "post_bill"`
   - `action: "post_purchase_order"`
+
+##### Telegram channel publication (`provider: "telegram"`)
+
+Use this integration when an automated workflow should publish text to Telegram after a prior human approval. The Telegram action does not create an approval by itself; place it after an `approval_request` node whose `approved` transition targets this action.
+
+Required configuration:
+
+- `action_type`: exactly `"integration"`.
+- `provider`: exactly `"telegram"`.
+- `action`: exactly `"send_message"`.
+- `target.kind`: exactly `"channel"` for channel publication.
+- `target.channel_id`: explicit numeric Telegram channel ID beginning with `-100`; do not use a username and do not invent a default.
+- The channel must already be verified in the current organization through Telegram settings; the numeric ID alone is never authorization.
+- `text`: a non-empty literal or placeholder such as `"{{initial_payload.text}}"`.
+- `parse_mode`: optional Telegram formatting mode: `"HTML"`, `"Markdown"`, or `"MarkdownV2"`. If omitted, the text is sent as plain text.
+
+For MCP agents, use `parse_mode` only when the text is authored with that
+mode's syntax. The value may be a literal in the action config or a resolved
+workflow input (`inputs.parse_mode`). Unsupported values fail the action before
+the message is queued. A completed action confirms durable outbox enqueue; it
+does not confirm that Telegram has accepted the message.
+
+Example:
+
+```json
+{
+  "id": "telegram_channel_post",
+  "name": "Publish to Telegram channel",
+  "type": "action",
+  "config": {
+    "action_type": "integration",
+    "provider": "telegram",
+    "action": "send_message",
+    "target": {
+      "kind": "channel",
+      "channel_id": "-1001234567890"
+    },
+    "text": "{{initial_payload.text}}",
+    "parse_mode": "HTML",
+    "retry": { "max_attempts": 3, "backoff_seconds": 2 },
+    "on_error": "fail"
+  },
+  "transitions": {
+    "default": "published"
+  }
+}
+```
+
+Runtime behavior:
+
+1. Colba checks that Telegram is configured for the organization.
+2. Colba requires an active verified-channel registry row for the current organization and exact `chat_id`.
+3. Channel ownership and Telegram permissions are verified during the one-time organization connection flow.
+4. The message is encrypted and placed in the retryable Telegram outbox.
+5. Immediately before `sendMessage`, the worker re-checks the enabled integration and exact tenant/destination binding. Disconnecting or revoking a destination cancels already queued delivery.
+6. The worker sends the message and records delivery status. Telegram 400/401/403 errors become terminal delivery failures; transient failures are retried.
+
+Telegram URL buttons are limited to 20 entries and accept only absolute HTTP(S) URLs without embedded credentials.
+
+The action reports completion after durable enqueue. It does not wait for Telegram delivery confirmation; agents must not describe a completed action node as proof that the message was delivered.
+
+The reusable production blueprint `Telegram Channel Publication with Approval` follows this pattern. It assigns approval to organization job title `publisher`, collects one required `text` field, and leaves the channel ID unset unless the production installer receives `--channel-id` or `TELEGRAM_CHANNEL_ID`.
+
+##### Workflow Email Action (`provider: "colba"`, `action: "send_email"`)
+
+Use this action to build an email from resolved process values and place it in
+Colba's durable email delivery queue. It is appropriate for process
+notifications, review requests, and operational alerts. The action completes
+after queue admission; it does not wait for SMTP delivery.
+
+Configuration:
+
+```json
+{
+  "action_type": "integration",
+  "provider": "colba",
+  "action": "send_email",
+  "recipient_mode": "static",
+  "recipient_email": "operations@example.com",
+  "subject": "New request {{initial_payload.request_number}}",
+  "message": "Please review the request.",
+  "signature": "Operations team",
+  "email_fields": [
+    "initial_payload.request_number",
+    "initial_payload.requester_name"
+  ],
+  "field_labels": {
+    "initial_payload.request_number": "Request number",
+    "initial_payload.requester_name": "Requester"
+  }
+}
+```
+
+Use `recipient_mode: "field"` with `recipient_field` when the recipient comes
+from process data, for example `initial_payload.requester_email`. The resolved
+value must be one strict email address. For public form data, set
+`allowed_recipient_domains` to a list such as `["company.example"]`. New
+pipelines should use `email_fields`; `transmitted_fields` is a legacy alias.
+Select only the required process data and never expose passwords, tokens,
+organization secrets, or unnecessary personal data.
+
+Limits are 255 characters for the subject, 20,000 for the message, 2,000 for
+the signature, 50 selected fields, and 65,536 bytes for the serialized email
+payload by default. Subject control characters are rejected. The action is
+protected by tenant and recipient rate limits, is idempotent for retries of
+the same node execution, and returns `delivery_id`, `delivery_status`,
+`email_execution`, `field_count`, and `recipient_mode` in the node output.
+`delivery_status: "pending"` means queued, not that SMTP delivery has
+completed. Configure `on_error: "transition"` and `error_transition_key` if
+queue-admission errors need a visible workflow branch. Redis protection fails
+closed when unavailable.
 
 ##### Generic Document Creator (`action: "create_document"`)
 
@@ -724,7 +1041,7 @@ Example:
 #### Placeholder and Secrets Resolution
 
 The `action` node dynamically resolves placeholders wrapped in `{{ ... }}` within configuration strings:
-- `{{secrets.KEY_NAME}}` looks up `KEY_NAME` in environment variables.
+- `{{secrets.KEY_NAME}}` looks up `KEY_NAME` in environment variables. This is a legacy mechanism and MUST NOT be used for credentials in new pipelines.
 - `{{metadata.key}}` looks up `key` in `context.metadata`.
 - `{{initial_payload.key}}` looks up `key` in `context.initial_payload`.
 - `{{step_results.node_id.key}}` looks up nested keys in step results.
@@ -737,12 +1054,22 @@ Common config fields:
 - `url`
 - `method`
 - `payload_mapping`
+- `auth_secret_name` (required when the external destination requires authentication)
 
 Rules:
+- **HARD AGENT SECURITY RULE:** An unauthenticated `outbound_webhook` MAY omit credentials. If the external destination requires authentication, the node MUST use `config.auth_secret_name` and an organization-managed secret. The agent MUST NOT generate `auth_token`, a literal `Authorization` header, or `{{secrets.*}}` for credentials.
+- The value of `auth_secret_name` is only the secret name (for example, `CONTENT_API_TOKEN`), never the secret value and never a `Bearer ...` string.
+- If an external service requires authentication and no secret name is available, the agent MUST ask for/configure the organization secret name or leave the pipeline uncreated; it MUST NOT inline or invent a token.
+- The organization secret must contain the raw credential, and its admin-managed `allowed_origins` must include the webhook origin.
+- The secret is resolved at execution time before each webhook attempt, so rotations apply to retries and later process steps.
 - `url` is required,
 - `method` defaults to `POST`,
 - prefer explicit payload mappings and stable field names,
-- `outbound_webhook` sends a direct HTTP request to an arbitrary URL,
+- `outbound_webhook` accepts only HTTP(S) targets allowed by the outbound SSRF policy,
+- `auth_secret_name` resolves an encrypted secret from the organization that owns
+  the running process. The target origin must also be present in that secret's
+  admin-managed `allowed_origins` list. Never put customer tokens in pipeline JSON
+  or the shared production environment.
 - `outbound_integration` calls a built-in provider adapter/action such as QuickBooks.
 
 ### `outbound_webhook`
@@ -760,6 +1087,7 @@ Example:
     "url": "https://api.example.com/invoices/receive",
     "method": "POST",
     "timeout": 15,
+    "auth_secret_name": "ERP_API_TOKEN",
     "headers": {
       "Content-Type": "application/json"
     },
@@ -903,6 +1231,43 @@ It also writes execution metadata under `step_results[node_id]`:
   "llm_model": "gemini-..."
 }
 ```
+
+### `load_test`
+
+Use this node to run automated k6 website / API load and stress tests as an asynchronous background workflow step.
+
+Supported config fields:
+- `target_url` (required string or template): target URL to perform stress testing against (e.g. `"https://example.com/api"` or `"{{target_site_url}}"`). Validated against SSRF rules at runtime.
+- `stages` (array of stage objects): multi-step ramping schedule for k6 VUs (virtual users). Each stage requires `duration` (e.g. `"10s"`, `"1m"`) and `target` (integer number of VUs).
+- `thresholds` (optional map): metric threshold rules for performance pass/fail assertion (e.g. `{"http_req_failed": ["rate<0.01"], "http_req_duration": ["p(95)<500"]}`).
+
+Example:
+```json
+{
+  "id": "run_load_test",
+  "name": "Execute k6 Load Test",
+  "type": "load_test",
+  "config": {
+    "target_url": "{{target_url}}",
+    "stages": [
+      { "duration": "10s", "target": 5 },
+      { "duration": "30s", "target": 20 }
+    ],
+    "thresholds": {
+      "http_req_failed": ["rate<0.01"]
+    }
+  },
+  "transitions": {
+    "default": "report_results"
+  }
+}
+```
+
+Output metrics written into `submitted_data` / `step_results[node_id]`:
+- `error_rate`: float percentage of failed requests.
+- `p95_latency_ms`: 95th percentile latency in milliseconds.
+- `http_reqs`: total HTTP requests executed.
+- `status`: `"completed"`, `"threshold_failed"`, or `"failed"`.
 
 ### Response format
 
@@ -1206,6 +1571,173 @@ Reads:
 
 Writes:
 - `step_results[config.result_key]`, for example `po_id` or `invoice_id`
+
+---
+
+### `wait_for_callback`
+
+Pauses the pipeline process and waits for an **external HTTP callback** before continuing.
+The engine issues a one-time signed token, delivers it to the configured destination (webhook or email),
+and resumes execution when the external system calls back.
+
+#### When to use
+
+Use `wait_for_callback` when a pipeline step depends on a result from an **external system**:
+- A third-party payment processor that calls back upon settlement.
+- An external approval portal not integrated into Colba.
+- Any manual or semi-automated external workflow step.
+
+Do **not** use it as a replacement for `approval_request` (which is for Colba members).
+
+#### Required config fields
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `name` | string | Yes | Human-readable name for this step (shown in email subjects and logs). |
+| `delivery_mode` | string | Yes | `"webhook"` or `"email"`. |
+| `timeout_minutes` | integer | No (default: unlimited) | Optional minutes before the token expires. If omitted, the token never expires and waits indefinitely for an external callback. |
+| `target_url` | string | webhook only | Full HTTPS/HTTP URL to POST the callback invitation to. Must be a public internet address. Internal/private IP ranges are blocked. |
+| `recipient_email` | string | email only | Email address to send the callback instructions to. |
+| `secret_name` | string | No | Name of an organization secret to use for HMAC signing. Its allowed origins must include `target_url`. If set, `X-Callback-Secret` (or `secret_header`) is attached to the webhook delivery. |
+| `secret_header` | string | No | Custom header name for the secret (default: `X-Callback-Secret`). |
+| `payload_schema` | object | No | JSON Schema (draft-07) to validate the callback payload before resuming the process. |
+
+#### Indefinite Token Timeout Behavior (Important for MCP Agents)
+
+- **Default (No Timeout)**: If `timeout_minutes` is **omitted**, the generated callback token has `expires_at: null` and will **never expire automatically**. The process will wait indefinitely for the external HTTP callback. Use this default for external systems, offline processing, or long-running workflows.
+- **Explicit Timeout**: Only specify `timeout_minutes` (e.g., `60`, `1440`) if the business logic requires timing out after a fixed duration and routing through the `timeout` transition.
+- **Audit Trail & Logging**: Upon node initialization, Colba writes audit entries (`Callback node initialized. Token enqueued (indefinite, no timeout)`) and logs `timeout_mode: "indefinite"` and `expires_at: "never"`.
+
+#### Delivery modes
+
+**`webhook`**: The engine POSTs a JSON body to `target_url`:
+```json
+{ "callback_url": "https://<api>/api/v1/workflow/pipeline-callbacks/<token>" }
+```
+The external system must then POST back to `callback_url` with the result payload.
+
+**`email`**: The engine sends an email to `recipient_email` containing the `callback_url`.
+The recipient copies it and sends the callback from any HTTP client.
+
+#### Outgoing transitions
+
+Define **at least two** outgoing transitions:
+
+| Transition key | When fired |
+| :--- | :--- |
+| `completed` | External system sent a valid callback with `status: "completed"`. |
+| `timeout` | Token expired before a callback arrived. |
+
+Optional additional transitions:
+
+| Transition key | When fired |
+| :--- | :--- |
+| `failed` | External system explicitly sent `status: "failed"` in the callback. |
+
+#### Callback endpoint (external system must call)
+
+```
+POST /api/v1/workflow/pipeline-callbacks/{raw_token}
+Content-Type: application/json
+
+{
+  "status": "completed",      // required: "completed" or "failed"
+  "result": { ... }           // optional: any JSON object, available in step_results
+}
+```
+
+The endpoint is **publicly accessible** (no Colba auth required — the signed token is the credential).
+
+#### Getting the token for a waiting process (as a Colba member)
+
+```
+GET /api/v1/workflow/processes/{process_id}/nodes/{node_id}/callback-token
+Authorization: Bearer <member_token>
+```
+
+Returns the active callback credentials:
+```json
+{
+  "token": "clb_cbk_...",
+  "callback_url": "https://<api>/api/v1/workflow/pipeline-callbacks/<token>",
+  "secret_name": null,
+  "secret_header": "X-Callback-Secret",
+  "status": "pending",
+  "expires_at": "2026-08-02T12:00:00+00:00"
+}
+```
+The returned token can be used to call the callback URL manually.
+
+#### Context output
+
+After resumption the following is written to `step_results[node_id]`:
+```json
+{
+  "status": "completed",
+  "execution_result": { /* whatever the external system sent in 'result' */ },
+  "transition_key": "completed"
+}
+```
+
+#### Minimal example
+
+```json
+{
+  "id": "wait_payment_confirm",
+  "type": "wait_for_callback",
+  "label": "Wait for payment confirmation",
+  "config": {
+    "name": "Payment Gateway Callback",
+    "delivery_mode": "webhook",
+    "target_url": "https://hooks.payment-provider.com/notify",
+    "timeout_minutes": 1440,
+    "secret_name": "payment_gateway_hmac",
+    "payload_schema": {
+      "type": "object",
+      "required": ["transaction_id"],
+      "properties": {
+        "transaction_id": { "type": "string" },
+        "amount": { "type": "number" }
+      }
+    }
+  },
+  "transitions": {
+    "completed": { "target": "mark_paid" },
+    "timeout":   { "target": "notify_team" },
+    "failed":    { "target": "escalate" }
+  }
+}
+```
+
+#### Email delivery example
+
+```json
+{
+  "id": "wait_external_sign",
+  "type": "wait_for_callback",
+  "label": "Wait for e-signature",
+  "config": {
+    "name": "Document Signature Request",
+    "delivery_mode": "email",
+    "recipient_email": "signer@partner.org",
+    "timeout_minutes": 4320
+  },
+  "transitions": {
+    "completed": { "target": "archive" },
+    "timeout":   { "target": "send_reminder" }
+  }
+}
+```
+
+#### Constraints and rules
+
+- `target_url` must resolve to a **public** IP address. Loopback, RFC-1918 private ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), link-local (169.254.x.x), and multicast addresses are **blocked** to prevent SSRF.
+- Each token is **single-use**. Once the callback is received the token is invalidated.
+- Retries: the delivery worker retries webhook POSTs up to 3 attempts with exponential back-off before marking the delivery as failed.
+- The callback token itself is **Fernet-encrypted at rest** in the delivery outbox.
+- Do **not** use `wait_for_callback` for human approval decisions inside Colba — use `approval_request` instead.
+
+---
 
 ### `end`
 
@@ -1635,6 +2167,11 @@ Check:
 Launch-time checks are driven by `header_schema` and any required fields it defines.
 
 Rules:
+- for API-triggered pipelines, `header_schema` must be present and non-empty whenever the launch accepts payload fields; it must describe every accepted field.
+- Every field accepted in the initial payload must be declared in `header_schema.properties`; otherwise launch validation returns `unknown_field` / `INPUT_VALIDATION_FAILED`.
+- If the start node is `collect_input`, its `config.fields` must be copied into the root `header_schema` (including names, types, and required status); defining them only inside a later `task` does not make them launchable.
+- If the start node is not `collect_input`, validate its own node-specific launch contract. Do not add `collect_input.config.fields` or require form fields unless the pipeline explicitly accepts them.
+- In all cases, `start_node_id` must be the actual node `id`; the start node type determines which node-specific launch rules apply.
 - required launch fields must be present in the payload,
 - calculated fields with `formula` are skipped from the required-input check,
 - missing required fields should fail early with a clear error,
@@ -1662,7 +2199,7 @@ Rules:
 7. Keep transition keys aligned with button/action IDs.
 8. Always include an `end` path for success and, when useful, a failure or rejection path too.
 9. **AI Agent Rule - Standard Entity Templates**: When generating pipelines for standard entities (bills `Bill`, invoices `Invoice`, RFQs `RFQ`, purchase orders `PO`, quotes `Quote`, receipts `Receipt`), the AI agent **MUST use the predefined fields from entity templates** (using exact system key names, types, and `x-binding` from the mapping tables above). Specifically:
-   - If there are fields for entities in `global_fields` (for example, employee `employe` / `employee`, counterparty/vendor `vendors`, cost center `cost_center`, department `department`, location `location`, job title `job_title`, role `role`, currency `currency`, tax rate `tax_rate`, bank country code `bank_country_code`, task/process priority `priority`), the AI agent MUST bind them as global fields, setting `custom_field_id` to the ID of the corresponding global field from context. Any reference to `employee`, `employee_id`, `employe_id`, or `member_id` must be bound to the `employe` global field. Priority and bank country code must similarly be mapped to `priority` and `bank_country_code` global fields respectively when used.
+   - If there are fields for entities in `global_fields` (for example, employee `employe` / `employee`, counterparty/vendor `vendors`, cost center `cost_center`, department `department`, location `location`, job title `job_title`, access role `role`, currency `currency`, tax rate `tax_rate`, bank country code `bank_country_code`, task/process priority `priority`), the AI agent MUST bind them as global fields, setting `custom_field_id` to the ID of the corresponding global field from context. Any reference to `employee`, `employee_id`, `employe_id`, or `member_id` must be bound to the `employe` global field. Priority and bank country code must similarly be mapped to `priority` and `bank_country_code` global fields respectively when used.
    - The AI agent MUST include a line items table named strictly `line_items` (type `array` / Table) in the input form for documents that have detailed line items (especially `Bill`, `Invoice`, `PO`, `Quote`, `Receipt`, `RFQ`).
 
 
@@ -1835,6 +2372,17 @@ Why this is a good generation reference:
 Before returning or saving the JSON, verify:
 - `nodes` is not empty,
 - `start_node_id` is present and valid,
+- `start_node_id` exactly equals the `id` of an existing node,
+- for a public form, the `form_start` node's `id` is exactly
+  `start_node_id` (compare literal strings after any persistence round-trip),
+- all newly generated public-form node IDs, `start_node_id`, and transition
+  targets use the same UUID-based ID space; semantic aliases are kept only in
+  `semantic_id`,
+- if the start node is `collect_input`, `header_schema.properties` and its `config.fields` describe the same launch fields,
+- if the start node is `form_start`, `header_schema.properties`,
+  `form_start.config.fields`, and `required_fields` describe the same public
+  form contract,
+- if the start node is another type, its node-specific required inputs are valid and no unneeded `collect_input` fields/schema are generated,
 - every non-terminal node has at least one transition,
 - every `approval_request` and `task` has `assignment_target`,
 - `task` nodes have explicit `actions` defined,
@@ -1856,3 +2404,97 @@ The workflow engine does not just store JSON. It executes it, validates it, and 
 
 If the JSON is vague, the runtime becomes vague.
 If the JSON is explicit, the runtime becomes predictable.
+## Agent execution and safety contract
+
+Agents must follow this order for generated or changed pipelines:
+
+1. Discover organization entities with `get_organization_context`.
+2. Draft and normalize the pipeline.
+3. Call `validate_pipeline_schema` and resolve every assignment target from the discovered context.
+4. Call `preview_pipeline_changes`; do not apply a draft with validation errors.
+5. For conditional graphs, call `verify_expected_route` with representative `sample_input` for each branch.
+6. Submit mutations through HITL and wait for the approval to be resolved before reporting success.
+7. Record the final verification result and report partial or failed execution explicitly.
+
+Dynamic form fields use `visible_if`, `required_if`, `forbidden_if`, and `required_together`.
+Their `field` references must point to fields in the same launch form; hidden fields must not be
+submitted. Numeric boundaries use `validation.min`/`validation.max`, including zero, and invalid
+regular expressions are pipeline errors rather than silently ignored.
+
+`assignment_target` is a typed object: `individual`, `role`, `workgroup`, `department`, `location`,
+or `manager`. Business roles are job titles, not access roles. Use `get_pending_approvals` to find
+the `/mcp-approve?approval_id=...` review path. A mutation is complete only after approval execution
+and post-apply verification succeed.
+
+### Agent run and event log
+
+Every multi-step agent change must start with `start_agent_run`. Keep the returned `run_id` and use
+the agent-run tools throughout the operation:
+
+- `record_agent_context` after discovery;
+- `record_agent_draft` after normalization and schema validation;
+- `record_agent_approval` for every HITL approval ID;
+- `record_agent_mutation` after each attempted mutation, including failed attempts;
+- `record_agent_verification` exactly once after post-apply checks;
+- `get_agent_run_events` when an operator needs the immutable audit history.
+
+Agent events are append-only and tenant scoped. Common secret-bearing keys are redacted, event data
+is limited to 64 KiB, discovery context to 512 KiB, pipeline drafts to 1 MiB, and verification data
+to 256 KiB. Do not place credentials or personal secrets in assumptions, goals, or free-form fields.
+
+The legal state flow is:
+
+```text
+planning -> discover -> model -> draft -> validate -> preview -> hitl
+         -> awaiting_approval -> applying -> verifying -> report -> completed
+```
+
+`awaiting_clarification`, `failed`, and `partially_completed` are explicit alternate states. A failed
+run may restart at `planning`; completed and partially completed runs are terminal.
+
+### Dynamic field rule examples
+
+```json
+{
+  "name": "custom_finish",
+  "type": "string",
+  "visible_if": {"field": "finish_type", "equals": "custom"},
+  "required_if": {"field": "finish_type", "equals": "custom"},
+  "forbidden_if": {"field": "finish_type", "not_equals": "custom"},
+  "required_together": ["custom_finish_code"],
+  "validation": {"pattern": "^[A-Z0-9-]{1,30}$"}
+}
+```
+
+Every referenced field must exist in the same launch form. Numeric `min` and `max` must be numbers,
+`min` cannot exceed `max`, regular expressions may contain at most 500 characters, and nested
+quantifiers such as `(a+)+` are rejected.
+
+### Route verification sample contract
+
+For simple conditions, `sample_input` may be the initial payload directly. For pipelines that depend
+on previous form submissions or human action buttons, use the expanded form:
+
+```json
+{
+  "initial_payload": {"amount": 1200},
+  "step_results": {
+    "review_form": {"submitted_data": {"risk": "high"}}
+  },
+  "_transitions": {
+    "approval_node_id": "approved",
+    "revision_node_id": ["revise", "approved"]
+  }
+}
+```
+
+`_transitions` supplies action keys for nodes with multiple outgoing actions. Arrays provide choices
+for repeated loopback visits. Route verification uses the same condition evaluator as runtime and is
+bounded to 200 steps.
+
+### Approval execution failures
+
+`execution_failed` is not equivalent to successful approval. The approval record includes a sanitized
+error code, attempt count, and `execution_retryable`. Only transient server failures are retryable,
+with at most three execution attempts. Validation and permission failures are terminal and require a
+corrected mutation rather than replaying the same approval.

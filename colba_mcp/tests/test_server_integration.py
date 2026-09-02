@@ -315,6 +315,39 @@ async def test_colba_client_integration_flow():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_set_pipeline_access_uses_atomic_access_endpoint():
+    api_url = "http://localhost:9000"
+    template_id = "00000000-0000-0000-0000-000000000001"
+    org_id = "00000000-0000-0000-0000-000000000004"
+    client = ColbaClient(api_url=api_url, token="tk_live_test_access_token")
+
+    update_route = respx.patch(f"{api_url}/api/v1/templates/{template_id}/access").mock(
+        return_value=httpx.Response(200, json={
+            "status": "updated",
+            "process_access": {
+                "view": {"type": "all_members"},
+                "launch": {"type": "job_title", "id": "Accountant"},
+            },
+        })
+    )
+    client.org_id = org_id
+
+    result = await client.set_pipeline_access(
+        template_id,
+        {"launch": {"type": "job_title", "ids": ["Accountant", "Buyer"]}},
+    )
+
+    assert result["status"] == "updated"
+    import json
+    sent_payload = json.loads(update_route.calls[0].request.content)
+    assert sent_payload == {
+        "launch": {"type": "job_title", "ids": ["Accountant", "Buyer"]},
+    }
+    assert update_route.calls[0].request.headers["X-Colba-Tool"] == "set_pipeline_access"
+    await client.close()
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_pipeline_embed_client_flow():
     api_url = "http://localhost:9000"
     template_id = "00000000-0000-0000-0000-000000000001"
@@ -440,4 +473,3 @@ async def test_colba_client_super_process_integration():
     assert detail["items"][0]["current_stage_label"] == "Operator Form"
 
     await client.close()
-

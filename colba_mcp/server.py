@@ -23,9 +23,13 @@ _BUILTIN_DECISION_STATUSES = {"approved", "rejected"}
 # limit/offset guards: prevent absurdly large requests from the LLM
 _MAX_LIMIT = 200
 _MAX_JOB_TITLE_LENGTH = 100
+_PROCESS_ACCESS_TYPES = {"all_members", "department", "job_title", "individual"}
 _CLIENT_CACHE_TTL_SECONDS = 300.0
 _CLIENT_CACHE_MAX_SIZE = 64
 _client_cache: dict[tuple[str, str], tuple[float, ColbaClient]] = {}
+_ORG_CONTEXT_CACHE_TTL_SECONDS = 15.0
+_organization_context_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_organization_context_semaphore = asyncio.Semaphore(16)
 
 # ---------------------------------------------------------------------------
 # Server init
@@ -189,15 +193,21 @@ async def list_pipelines(status: Optional[str] = None, ctx: Context = None) -> A
 
 
 @mcp.tool()
-async def start_process(template_id: str, payload: dict, ctx: Context = None) -> Any:
+async def start_process(
+    template_id: str,
+    payload: dict,
+    idempotency_key: Optional[str] = None,
+    ctx: Context = None,
+) -> Any:
     """
     Start a new workflow process under a template.
     template_id: UUID of the workflow template (MUST use the 'id' field from list_pipelines, NOT 'pipeline_id').
     payload: Input data matching the template's header_schema.
+    idempotency_key: Optional UUID identifying one logical launch attempt. Reuse it only when retrying that attempt.
     Returns: The started process ID and initial status.
     """
     async def _call(client: ColbaClient):
-        return await client.start_process(template_id, payload)
+        return await client.start_process(template_id, payload, idempotency_key)
     return await handle_mcp_call(_call, ctx=ctx)
 
 
@@ -406,7 +416,7 @@ async def create_custom_field(
     type: str,
     description: Optional[str] = None,
     validation: Optional[dict] = None,
-    options: Optional[list] = None,
+    options: Optional[dict | list] = None,
     is_active: bool = True,
     ctx: Context = None
 ) -> Any:
@@ -417,7 +427,7 @@ async def create_custom_field(
     type: Field type (e.g. 'text', 'number', 'select', 'date').
     description: Optional details.
     validation: Optional regex/constraint config dictionary.
-    options: Optional choice list for select fields.
+    options: Optional choices list or dynamic-source object (for example, {"source": "job_roles"}).
     is_active: True if field is enabled.
     """
     payload = {
@@ -658,6 +668,10 @@ async def validate_pipeline_schema(pipeline_config: dict) -> Any:
 
     if not has_end_node and node_ids:
         errors.append("Pipeline contains no 'end' node")
+
+    from src.workflow.application.input_validation_service import input_validation_service
+    field_definitions = input_validation_service.extract_fields(pipeline_config)
+    errors.extend(issue.message for issue in input_validation_service.validate_rule_definitions(field_definitions))
 
     return {
         "is_valid": len(errors) == 0,
@@ -901,6 +915,91 @@ async def update_pipeline(
         if description is not None:
             payload["description"] = description
         return await client.update_pipeline(template_id, payload)
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+def _normalize_process_access_rule(
+    rule_type: Optional[str],
+    value: Optional[str],
+    values: Optional[list[str]],
+    field_name: str,
+) -> dict[str, Any]:
+    normalized_type = (rule_type or "").strip().lower()
+    if normalized_type == "role":
+        normalized_type = "job_title"
+    if normalized_type not in _PROCESS_ACCESS_TYPES:
+        raise ValueError(
+            f"{field_name}_type must be one of: {', '.join(sorted(_PROCESS_ACCESS_TYPES))}"
+        )
+    raw_values = [*(values or [])]
+    if value is not None:
+        raw_values.insert(0, value)
+    if normalized_type == "all_members":
+        if raw_values:
+            raise ValueError(f"{field_name}_value(s) must be omitted for all_members")
+        return {"type": normalized_type}
+    if not raw_values:
+        raise ValueError(f"{field_name}_value or {field_name}_values is required for {normalized_type}")
+    if len(raw_values) > 1000:
+        raise ValueError(f"{field_name}_values cannot contain more than 1000 entries")
+
+    normalized_values: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values:
+        normalized_value = str(raw_value or "").strip()
+        if not normalized_value:
+            raise ValueError(f"{field_name}_values cannot contain empty entries")
+        if len(normalized_value) > 255:
+            raise ValueError(f"{field_name}_value cannot exceed 255 characters")
+        key = normalized_value.casefold()
+        if key not in seen:
+            seen.add(key)
+            normalized_values.append(normalized_value)
+    return (
+        {"type": normalized_type, "id": normalized_values[0]}
+        if len(normalized_values) == 1
+        else {"type": normalized_type, "ids": normalized_values}
+    )
+
+
+@mcp.tool()
+async def set_pipeline_access(
+    template_id: str,
+    view_type: Optional[str] = None,
+    view_value: Optional[str] = None,
+    view_values: Optional[list[str]] = None,
+    launch_type: Optional[str] = None,
+    launch_value: Optional[str] = None,
+    launch_values: Optional[list[str]] = None,
+    ctx: Context = None,
+) -> Any:
+    """
+    Configure who can see and launch a workflow pipeline.
+    At least one of view_type or launch_type is required. Types are
+    'all_members', 'department', 'job_title', or 'individual'. For department
+    use one or more workgroup UUIDs, keys, or names; for job_title use one or
+    more organization position names; for individual use member UUIDs or emails.
+    Singular *_value arguments remain supported; use *_values for multiple targets.
+    The mutation uses the normal pipeline-management capability and MCP HITL flow.
+    """
+    try:
+        validate_uuid(template_id, "template_id")
+        if view_type is None and launch_type is None:
+            raise ValueError("Provide view_type, launch_type, or both")
+        access_updates: dict[str, dict[str, Any]] = {}
+        if view_type is not None:
+            access_updates["view"] = _normalize_process_access_rule(
+                view_type, view_value, view_values, "view",
+            )
+        if launch_type is not None:
+            access_updates["launch"] = _normalize_process_access_rule(
+                launch_type, launch_value, launch_values, "launch",
+            )
+    except ValueError as e:
+        return {"error": "invalid_input", "message": str(e)}
+
+    async def _call(client: ColbaClient):
+        return await client.set_pipeline_access(template_id, access_updates)
     return await handle_mcp_call(_call, ctx=ctx)
 
 
@@ -1148,8 +1247,8 @@ async def get_ksef_pipeline_guide() -> Any:
 @mcp.tool()
 async def get_compatible_super_process_templates(ctx: Context = None) -> Any:
     """
-    Get active workflow templates in the organization eligible for batch launching in a SuperProcess (nadproces).
-    Returns: List of templates with compatibility status and reason if ineligible.
+    Inspect active workflow templates for SuperProcess batch launch compatibility.
+    Returns every active template with is_batch_compatible; only choose entries where it is true.
     """
     async def _call(client: ColbaClient):
         return await client.get_compatible_batch_templates()
@@ -1166,8 +1265,8 @@ async def create_super_process(
     """
     Create and batch-launch a new SuperProcess (nadproces) consisting of multiple workflow process templates.
     title: The human-readable title/name for the batch (e.g. 'Production Batch #1042' or 'Onboarding Suite').
-    template_ids: List of workflow template UUIDs to instantiate and start.
-    idempotency_key: Optional idempotency key for safe retries.
+    template_ids: Ordered list of 1-50 template UUIDs. Duplicate IDs intentionally launch multiple instances.
+    idempotency_key: Optional key for safe retries. Reuse it only with the exact same title and ordered template_ids.
     Returns: The created super process record with initiated items, process IDs, and status.
     """
     async def _call(client: ColbaClient):
@@ -1189,13 +1288,13 @@ async def list_super_processes(
 ) -> Any:
     """
     List SuperProcesses (nadprocesy) with real-time aggregated progress and status counts.
-    limit: Maximum items to return (1-200, default 50).
+    limit: Maximum items to return (1-100, default 50).
     offset: Pagination offset.
     search: Optional substring search query on title.
-    status: Optional status filter ('in_progress', 'completed', 'attention_required', 'partial_failed', 'cancelled').
+    status: Optional status filter ('in_progress', 'completed', 'attention_required', 'partial_failed').
     Returns: Paginated list of super process summaries with real-time breakdown of item states.
     """
-    limit = max(1, min(limit, _MAX_LIMIT))
+    limit = max(1, min(limit, 100))
     offset = max(0, offset)
     async def _call(client: ColbaClient):
         return await client.list_super_processes(
@@ -1223,6 +1322,745 @@ async def get_super_process(
     return await handle_mcp_call(_call, ctx=ctx)
 
 
+@mcp.tool()
+async def get_organization_context(ctx: Context = None) -> Any:
+    """
+    Get consolidated organization context in a single call for agent discovery.
+    Returns:
+    - workgroups: list of workgroups with id, name, type, parent_id, active member counts
+    - job_titles: list of business roles/job titles
+    - custom_fields: list of organization custom workflow fields
+    - active_pipelines: list of active workflow pipelines
+    - total_members: count of active organization members
+    """
+    async def _call(client: ColbaClient):
+        from copy import deepcopy
+
+        await client._ensure_org_id()
+        cache_key = (client.api_url, str(client.org_id))
+        cached = _organization_context_cache.get(cache_key)
+        now = time.monotonic()
+        if cached and now - cached[0] < _ORG_CONTEXT_CACHE_TTL_SECONDS:
+            return deepcopy(cached[1])
+
+        # These are independent reads.  Running them concurrently keeps agent
+        # discovery latency close to the slowest backend call instead of the
+        # sum of all five calls.
+        async with _organization_context_semaphore:
+            workgroups, job_titles, custom_fields, pipelines, members = await asyncio.gather(
+                client.list_workgroups(),
+                client.list_job_titles(),
+                client.list_custom_fields(),
+                client.list_pipelines(status="active"),
+                client.list_members(),
+            )
+        if not all(isinstance(value, list) for value in (workgroups, job_titles, custom_fields, pipelines, members)):
+            raise ValueError("Colba API returned an invalid organization context")
+
+        # Calculate member counts per workgroup
+        wg_counts = {}
+        for m in members:
+            for wg in m.get("workgroups", []):
+                wg_id = wg.get("id") or wg.get("name")
+                if wg_id:
+                    wg_counts[str(wg_id)] = wg_counts.get(str(wg_id), 0) + 1
+
+        def enrich_workgroups(items: list[dict[str, Any]]) -> None:
+            for wg in items:
+                if not isinstance(wg, dict):
+                    continue
+                wg_id = str(wg.get("id"))
+                wg_name = str(wg.get("name"))
+                wg["member_count"] = wg_counts.get(wg_id, wg_counts.get(wg_name, 0))
+                children = wg.get("children")
+                if isinstance(children, list):
+                    enrich_workgroups(children)
+
+        enrich_workgroups(workgroups)
+        compact_pipelines = [
+            {key: pipeline.get(key) for key in ("id", "name", "description", "is_active", "activation_required")}
+            for pipeline in pipelines
+            if isinstance(pipeline, dict)
+        ]
+        result = {
+            "workgroups": workgroups,
+            "job_titles": job_titles,
+            "custom_fields": custom_fields,
+            "active_pipelines": compact_pipelines,
+            "total_members": len(members),
+        }
+        _organization_context_cache[cache_key] = (now, deepcopy(result))
+        # Bound cache cardinality for long-running multi-tenant MCP servers.
+        if len(_organization_context_cache) > _CLIENT_CACHE_MAX_SIZE:
+            oldest_key = min(_organization_context_cache, key=lambda key: _organization_context_cache[key][0])
+            _organization_context_cache.pop(oldest_key, None)
+        return result
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def preview_directory_changes(data: list, ctx: Context = None) -> Any:
+    """
+    Dry-run preview of proposed directory upserts without modifying state.
+    Shows additions and field-level updates after MCP role normalization.
+    """
+    async def _call(client: ColbaClient):
+        if not isinstance(data, list):
+            return {"is_valid": False, "errors": ["data must be an array"], "warnings": []}
+        if len(data) > 1000:
+            return {"is_valid": False, "errors": ["data may contain at most 1000 entries"], "warnings": []}
+        current_members = await client.list_members()
+        current_emails = {m.get("email", "").lower(): m for m in current_members if m.get("email")}
+
+        to_add = []
+        to_update = []
+        warnings = []
+        errors = []
+        seen_emails = set()
+
+        for entry in data:
+            if not isinstance(entry, dict):
+                errors.append("Each directory entry must be an object")
+                continue
+            email = str(entry.get("email", "")).lower().strip()
+            if not email or "@" not in email:
+                errors.append("Each directory entry must contain a valid email")
+                continue
+            if email in seen_emails:
+                errors.append(f"Duplicate email in proposed directory data: {email}")
+                continue
+            seen_emails.add(email)
+            full_name = str(entry.get("full_name") or entry.get("name") or "").strip()
+            if not full_name:
+                errors.append(f"Directory entry '{email}' is missing a name")
+                continue
+            normalized_entry = {**entry, "email": email, "full_name": full_name, "role": "member"}
+            normalized_entry.pop("name", None)
+            requested_role = str(entry.get("role") or "member").strip().lower()
+            if requested_role != "member":
+                warnings.append(
+                    f"Member '{email}' requested role '{requested_role}', which MCP sync normalizes to 'member'."
+                )
+
+            if email in current_emails:
+                current = current_emails[email]
+                changes = {
+                    key: value for key, value in normalized_entry.items()
+                    if current.get(key) != value
+                }
+                if changes:
+                    to_update.append({"email": email, "changes": changes})
+            else:
+                to_add.append(normalized_entry)
+
+        return {
+            "is_valid": not errors,
+            "summary": f"{len(to_add)} members to add, {len(to_update)} members to update",
+            "to_add": to_add,
+            "to_update": to_update,
+            "errors": errors,
+            "warnings": warnings,
+        }
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def preview_pipeline_changes(
+    pipeline_config: dict,
+    template_id: Optional[str] = None,
+    ctx: Context = None,
+) -> Any:
+    """
+    Dry-run semantic preview of proposed pipeline changes.
+    Shows total nodes, stage breakdown, normalized assignment targets, and warnings.
+    """
+    async def _call(client: ColbaClient):
+        from src.workflow.application.llm_pipeline_normalizer import normalize_llm_pipeline_config
+        from src.shared.infrastructure.hash_helper import generate_canonical_hash
+        schema_validation = await validate_pipeline_schema(pipeline_config or {})
+        normalized = normalize_llm_pipeline_config(pipeline_config or {})
+        nodes = normalized.get("nodes", [])
+        if not isinstance(nodes, list):
+            nodes = []
+
+        assignment_targets = [
+            {
+                "node_id": n.get("id"),
+                "name": n.get("name"),
+                "target": (n.get("config") or {}).get("assignment_target"),
+            }
+            for n in nodes
+            if n.get("type") in ("approval_request", "task")
+        ]
+
+        diff = None
+        if template_id:
+            validate_uuid(template_id, "template_id")
+            current_template = await client.get_pipeline(template_id)
+            current_config = normalize_llm_pipeline_config(current_template.get("pipeline_config") or {})
+            current_nodes = {
+                str(node.get("id")): node
+                for node in current_config.get("nodes", [])
+                if isinstance(node, dict) and node.get("id")
+            }
+            proposed_nodes = {
+                str(node.get("id")): node
+                for node in nodes
+                if isinstance(node, dict) and node.get("id")
+            }
+            diff = {
+                "changed": generate_canonical_hash(current_config) != generate_canonical_hash(normalized),
+                "added_node_ids": sorted(proposed_nodes.keys() - current_nodes.keys()),
+                "removed_node_ids": sorted(current_nodes.keys() - proposed_nodes.keys()),
+                "changed_node_ids": sorted(
+                    node_id for node_id in current_nodes.keys() & proposed_nodes.keys()
+                    if generate_canonical_hash(current_nodes[node_id]) != generate_canonical_hash(proposed_nodes[node_id])
+                ),
+            }
+
+        return {
+            "template_id": template_id,
+            "normalized_config": normalized,
+            "total_nodes": len(nodes),
+            "stages_summary": [f"{n.get('name', n.get('id'))} ({n.get('type')})" for n in nodes],
+            "assignments": assignment_targets,
+            "schema_validation": schema_validation,
+            "diff": diff,
+            "warnings": [
+                n.get("config", {}).get("assignment_fallback_note")
+                for n in nodes
+                if n.get("config", {}).get("assignment_fallback_note")
+            ],
+        }
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def verify_expected_route(
+    pipeline_config: dict,
+    sample_input: dict,
+    expected_path: Optional[list] = None,
+    ctx: Context = None,
+) -> Any:
+    """
+    Simulate traversal of a workflow pipeline graph with a sample input payload to verify routing.
+    Evaluates transitions and branch targets without creating a live process.
+    """
+    from copy import deepcopy
+    from src.workflow.application.llm_pipeline_normalizer import normalize_llm_pipeline_config
+    from src.workflow.domain.graph import PipelineGraph
+    from src.workflow.domain.handlers.conditional import evaluate_condition_value
+
+    if not isinstance(sample_input, dict):
+        return {"traversed_path": [], "terminated_cleanly": False,
+                "matches_expected": False, "errors": ["sample_input must be an object"]}
+
+    normalized = normalize_llm_pipeline_config(pipeline_config or {})
+    raw_nodes = normalized.get("nodes")
+    if not isinstance(raw_nodes, list) or not raw_nodes:
+        return {"traversed_path": [], "terminated_cleanly": False,
+                "matches_expected": False, "errors": ["pipeline_config.nodes must be a non-empty list"]}
+
+    # Run the canonical graph checks first, but keep this tool tolerant of
+    # semantic (non-UUID) node ids used by draft pipelines.
+    errors: list[str] = []
+    try:
+        graph_errors = PipelineGraph.model_validate(deepcopy(normalized)).validate_integrity()
+        errors.extend(str(item.get("message")) for item in graph_errors if item.get("level") == "ERROR")
+    except Exception as exc:
+        errors.append(f"Invalid pipeline graph: {exc}")
+
+    nodes = {str(node.get("id")): node for node in raw_nodes if isinstance(node, dict) and node.get("id")}
+    start_id = str(normalized.get("start_node_id") or (raw_nodes[0].get("id") if raw_nodes else ""))
+    if start_id not in nodes:
+        errors.append(f"Start node '{start_id}' does not exist")
+
+    initial_payload = sample_input.get("initial_payload") if isinstance(sample_input.get("initial_payload"), dict) else sample_input
+    step_results = sample_input.get("step_results") if isinstance(sample_input.get("step_results"), dict) else {}
+    transition_overrides = sample_input.get("_transitions") if isinstance(sample_input.get("_transitions"), dict) else {}
+    override_positions: dict[str, int] = {}
+
+    def nested_value(data: Any, path: str) -> Any:
+        current = data
+        for part in str(path or "").split("."):
+            if not isinstance(current, dict) or part not in current:
+                return None
+            current = current[part]
+        return current
+
+    def evaluate_condition(config: dict[str, Any]) -> bool:
+        field = config.get("field")
+        if not field:
+            raise ValueError("condition requires config.field")
+        actual = nested_value(initial_payload, field)
+        if actual is None:
+            for node_result in step_results.values():
+                if isinstance(node_result, dict) and isinstance(node_result.get("submitted_data"), dict):
+                    actual = nested_value(node_result["submitted_data"], field)
+                    if actual is not None:
+                        break
+        if actual is None:
+            actual = ""
+        operator_name = str(config.get("operator") or "==")
+        expected = config.get("value")
+        return evaluate_condition_value(actual, operator_name, expected)
+
+    def override_transition(node_id: str, node: dict[str, Any]) -> str | None:
+        raw_choice = transition_overrides.get(node_id, transition_overrides.get(str(node.get("name") or "")))
+        if isinstance(raw_choice, list):
+            position = override_positions.get(node_id, 0)
+            if position >= len(raw_choice):
+                return None
+            override_positions[node_id] = position + 1
+            return str(raw_choice[position])
+        return str(raw_choice) if raw_choice is not None else None
+
+    visited: list[str] = []
+    current_id = start_id
+    try:
+        requested_max_steps = int(normalized.get("max_route_steps") or 50)
+    except (TypeError, ValueError):
+        requested_max_steps = 50
+        errors.append("max_route_steps must be an integer")
+    max_steps = min(max(requested_max_steps, 1), 200)
+    terminated = False
+
+    while current_id:
+        if current_id not in nodes:
+            errors.append(f"Transition points to missing node '{current_id}'")
+            break
+        if len(visited) >= max_steps:
+            errors.append(f"Route exceeded max_steps={max_steps}")
+            break
+        node = nodes[current_id]
+        visited.append(str(node.get("name") or current_id))
+        node_type = str(node.get("type") or "").lower()
+        if node_type in {"end", "completed", "rejected"}:
+            terminated = True
+            break
+
+        transitions = node.get("transitions")
+        if not isinstance(transitions, dict):
+            errors.append(f"Node '{current_id}' has invalid transitions")
+            break
+        transition_key = "default"
+        if node_type in {"condition", "conditional"}:
+            try:
+                transition_key = "true" if evaluate_condition(node.get("config") or {}) else "false"
+            except ValueError as exc:
+                errors.append(f"Node '{current_id}': {exc}")
+                break
+        else:
+            explicit_key = override_transition(current_id, node)
+            if explicit_key:
+                transition_key = explicit_key
+            elif "default" not in transitions and len(transitions) == 1:
+                transition_key = str(next(iter(transitions)))
+            elif "default" not in transitions and len(transitions) > 1:
+                errors.append(
+                    f"Node '{current_id}' has multiple transitions; provide sample_input._transitions.{current_id}"
+                )
+                break
+        transition = transitions.get(transition_key)
+        if transition is None:
+            errors.append(f"Node '{current_id}' has no '{transition_key}' transition")
+            break
+        next_target = transition.get("target") if isinstance(transition, dict) else transition
+        if not next_target:
+            errors.append(f"Node '{current_id}' transition '{transition_key}' has no target")
+            break
+        current_id = str(next_target)
+
+    matches = expected_path is None or visited == expected_path
+    return {
+        "traversed_path": visited,
+        "terminated_cleanly": terminated and not errors,
+        "matches_expected": matches and not errors,
+        "errors": errors,
+    }
+
+
+@mcp.tool()
+async def get_pending_approvals(ctx: Context = None) -> Any:
+    """
+    Retrieve approvals awaiting review or execution recovery, with direct review URLs.
+
+    Results may be in ``pending``, ``executing``, or ``execution_failed`` state.
+    """
+    async def _call(client: ColbaClient):
+        approvals = await client.list_mcp_approvals()
+        for a in approvals:
+            a_id = a.get("id")
+            # Keep this path aligned with the frontend route and with the
+            # action URL emitted by the API.  /settings/approvals is not a
+            # registered page and produced dead links for operators.
+            a["review_url"] = f"/mcp-approve?approval_id={a_id}"
+            a["next_action"] = "Open review URL in browser or call resolve_mcp_approval"
+        return approvals
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def start_agent_run(user_goal: str, ctx: Context = None) -> Any:
+    """Start a tenant-scoped, append-only audit run before agent discovery."""
+    async def _call(client: ColbaClient):
+        return await client.create_agent_run(user_goal)
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def get_agent_run(run_id: str, ctx: Context = None) -> Any:
+    """Read the current state and snapshots of an owned agent run."""
+    validate_uuid(run_id, "run_id")
+    async def _call(client: ColbaClient):
+        return await client.get_agent_run(run_id)
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def get_agent_run_events(run_id: str, limit: int = 200, ctx: Context = None) -> Any:
+    """Read the append-only, redacted event log for an owned agent run."""
+    validate_uuid(run_id, "run_id")
+    async def _call(client: ColbaClient):
+        return await client.list_agent_run_events(run_id, limit)
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def transition_agent_run(
+    run_id: str,
+    state: str,
+    error_message: Optional[str] = None,
+    ctx: Context = None,
+) -> Any:
+    """Move an agent run through its documented state machine."""
+    validate_uuid(run_id, "run_id")
+    async def _call(client: ColbaClient):
+        return await client.update_agent_run(
+            run_id, "state", {"state": state, "error_message": error_message}
+        )
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def record_agent_context(
+    run_id: str,
+    discovered_context: dict,
+    assumptions: Optional[list] = None,
+    ctx: Context = None,
+) -> Any:
+    """Persist bounded discovery context and assumptions for an agent run."""
+    validate_uuid(run_id, "run_id")
+    async def _call(client: ColbaClient):
+        return await client.update_agent_run(
+            run_id, "context", {
+                "discovered_context": discovered_context,
+                "assumptions": assumptions,
+            }
+        )
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def record_agent_draft(
+    run_id: str,
+    draft_pipeline: dict,
+    validation_results: Optional[dict] = None,
+    ctx: Context = None,
+) -> Any:
+    """Persist a bounded pipeline draft and its validation result."""
+    validate_uuid(run_id, "run_id")
+    async def _call(client: ColbaClient):
+        return await client.update_agent_run(
+            run_id, "draft", {
+                "draft_pipeline": draft_pipeline,
+                "validation_results": validation_results,
+            }
+        )
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def record_agent_mutation(
+    run_id: str,
+    tool_name: str,
+    payload: dict,
+    result: dict,
+    ctx: Context = None,
+) -> Any:
+    """Append a redacted and size-bounded mutation event to an agent run."""
+    validate_uuid(run_id, "run_id")
+    async def _call(client: ColbaClient):
+        return await client.update_agent_run(
+            run_id, "mutation", {
+                "tool_name": tool_name,
+                "payload": payload,
+                "result": result,
+            }
+        )
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def record_agent_approval(
+    run_id: str,
+    approval_id: str,
+    ctx: Context = None,
+) -> Any:
+    """Append an HITL approval reference to an agent run."""
+    validate_uuid(run_id, "run_id")
+    validate_uuid(approval_id, "approval_id")
+    async def _call(client: ColbaClient):
+        return await client.update_agent_run(
+            run_id, "approval", {"approval_id": approval_id}
+        )
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def list_workflow_schedules(
+    template_id: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    limit: int = 50,
+    offset: int = 0,
+    ctx: Context = None,
+) -> Any:
+    """
+    List automated recurring workflow execution schedules in the organization.
+    template_id: Optional UUID of the workflow template to filter by.
+    is_active: Optional boolean to filter by active/paused state.
+    limit: Max items to return (default: 50, max: 200).
+    offset: Pagination offset (default: 0).
+    """
+    if limit > _MAX_LIMIT:
+        return {"error": "invalid_input", "message": f"limit cannot exceed {_MAX_LIMIT}."}
+    if offset < 0:
+        return {"error": "invalid_input", "message": "offset cannot be negative."}
+
+    async def _call(client: ColbaClient):
+        return await client.list_schedules(
+            template_id=template_id,
+            is_active=is_active,
+            limit=limit,
+            offset=offset,
+        )
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def get_workflow_schedule(
+    schedule_id: str,
+    ctx: Context = None,
+) -> Any:
+    """
+    Get full details of a specific workflow schedule by UUID.
+    schedule_id: UUID of the schedule.
+    """
+    try:
+        validate_uuid(schedule_id, "schedule_id")
+    except ValueError as e:
+        return {"error": "invalid_input", "message": str(e)}
+
+    async def _call(client: ColbaClient):
+        return await client.get_schedule(schedule_id)
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def create_workflow_schedule(
+    template_id: str,
+    name: str,
+    cron_expression: str,
+    timezone: str = "UTC",
+    payload: Optional[dict] = None,
+    concurrency_policy: str = "allow",
+    description: Optional[str] = None,
+    is_active: bool = True,
+    ctx: Context = None,
+) -> Any:
+    """
+    Create a new automated recurring schedule for a workflow template.
+    template_id: UUID of the workflow template to execute.
+    name: Human readable name for the schedule (e.g. 'Daily Sync at 9am').
+    cron_expression: Standard 5-field cron expression (e.g. '0 9 * * 1-5' or '@daily').
+    timezone: IANA timezone name (default: 'UTC', e.g. 'Europe/Warsaw', 'America/New_York').
+    payload: Optional initial input dictionary for the process launch.
+    concurrency_policy: 'allow' (run on schedule regardless) or 'skip_if_running' (skip if previous run active).
+    description: Optional description of this scheduled execution.
+    is_active: Whether to enable the schedule immediately (default: True).
+    """
+    try:
+        validate_uuid(template_id, "template_id")
+    except ValueError as e:
+        return {"error": "invalid_input", "message": str(e)}
+
+    name = name.strip()
+    if not name:
+        return {"error": "invalid_input", "message": "name cannot be empty."}
+
+    cron_expression = cron_expression.strip()
+    if not cron_expression:
+        return {"error": "invalid_input", "message": "cron_expression cannot be empty."}
+
+    if concurrency_policy not in {"allow", "skip_if_running"}:
+        return {"error": "invalid_input", "message": "concurrency_policy must be 'allow' or 'skip_if_running'."}
+
+    async def _call(client: ColbaClient):
+        return await client.create_schedule(
+            template_id=template_id,
+            name=name,
+            cron_expression=cron_expression,
+            timezone=timezone,
+            payload=payload,
+            concurrency_policy=concurrency_policy,
+            description=description,
+            is_active=is_active,
+        )
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def update_workflow_schedule(
+    schedule_id: str,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    cron_expression: Optional[str] = None,
+    timezone: Optional[str] = None,
+    payload: Optional[dict] = None,
+    concurrency_policy: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    ctx: Context = None,
+) -> Any:
+    """
+    Update an existing workflow schedule.
+    schedule_id: UUID of the schedule to update.
+    """
+    try:
+        validate_uuid(schedule_id, "schedule_id")
+    except ValueError as e:
+        return {"error": "invalid_input", "message": str(e)}
+
+    if concurrency_policy is not None and concurrency_policy not in {"allow", "skip_if_running"}:
+        return {"error": "invalid_input", "message": "concurrency_policy must be 'allow' or 'skip_if_running'."}
+
+    async def _call(client: ColbaClient):
+        return await client.update_schedule(
+            schedule_id=schedule_id,
+            name=name,
+            description=description,
+            cron_expression=cron_expression,
+            timezone=timezone,
+            payload=payload,
+            concurrency_policy=concurrency_policy,
+            is_active=is_active,
+        )
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def toggle_workflow_schedule(
+    schedule_id: str,
+    is_active: bool,
+    ctx: Context = None,
+) -> Any:
+    """
+    Pause or resume an automated workflow schedule.
+    schedule_id: UUID of the schedule.
+    is_active: True to enable/resume, False to pause.
+    """
+    try:
+        validate_uuid(schedule_id, "schedule_id")
+    except ValueError as e:
+        return {"error": "invalid_input", "message": str(e)}
+
+    async def _call(client: ColbaClient):
+        return await client.toggle_schedule(schedule_id, is_active)
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def delete_workflow_schedule(
+    schedule_id: str,
+    ctx: Context = None,
+) -> Any:
+    """
+    Delete an automated workflow schedule.
+    schedule_id: UUID of the schedule to delete.
+    """
+    try:
+        validate_uuid(schedule_id, "schedule_id")
+    except ValueError as e:
+        return {"error": "invalid_input", "message": str(e)}
+
+    async def _call(client: ColbaClient):
+        return await client.delete_schedule(schedule_id)
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def trigger_workflow_schedule(
+    schedule_id: str,
+    ctx: Context = None,
+) -> Any:
+    """
+    Immediately trigger an execution of a workflow schedule on demand ('Run Now').
+    schedule_id: UUID of the schedule to trigger.
+    """
+    try:
+        validate_uuid(schedule_id, "schedule_id")
+    except ValueError as e:
+        return {"error": "invalid_input", "message": str(e)}
+
+    async def _call(client: ColbaClient):
+        return await client.trigger_schedule_run(schedule_id)
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def get_workflow_schedule_runs(
+    schedule_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    ctx: Context = None,
+) -> Any:
+    """
+    Get execution history and status logs for a specific workflow schedule.
+    schedule_id: UUID of the schedule.
+    limit: Max records to return (default: 50, max: 200).
+    offset: Pagination offset (default: 0).
+    """
+    try:
+        validate_uuid(schedule_id, "schedule_id")
+    except ValueError as e:
+        return {"error": "invalid_input", "message": str(e)}
+
+    async def _call(client: ColbaClient):
+        return await client.get_schedule_runs(schedule_id, limit=limit, offset=offset)
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
+@mcp.tool()
+async def validate_schedule_cron(
+    cron_expression: str,
+    timezone: str = "UTC",
+    count: int = 5,
+    ctx: Context = None,
+) -> Any:
+    """
+    Validate a cron expression syntax and compute the next N projected run times.
+    cron_expression: Standard 5-field cron expression or macro.
+    timezone: IANA timezone name (default: 'UTC').
+    count: Number of upcoming runs to calculate (default: 5).
+    """
+    cron_expression = cron_expression.strip()
+    if not cron_expression:
+        return {"error": "invalid_input", "message": "cron_expression cannot be empty."}
+
+    async def _call(client: ColbaClient):
+        return await client.validate_schedule_cron(cron_expression, timezone=timezone, count=count)
+    return await handle_mcp_call(_call, ctx=ctx)
+
+
 @mcp.prompt()
 def generate_pipeline_json(user_requirements: str) -> str:
     """
@@ -1235,5 +2073,6 @@ def generate_pipeline_json(user_requirements: str) -> str:
         f"USER REQUIREMENTS:\n{user_requirements}\n\n"
         f"STRICT WORKFLOW SPECIFICATION AND VALIDATION RULES:\n"
         f"```markdown\n{doc_content}\n```\n\n"
+        f"For multi-step work, start an agent run and record discovery, draft, approvals, mutations, and final verification. Before applying a mutation, discover organization context, validate and preview the graph, verify representative conditional routes, and wait for HITL approval.\n\n"
         f"Output ONLY valid JSON matching the specification."
     )
