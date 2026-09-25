@@ -164,6 +164,7 @@ The codebase currently supports these practical node families:
 - `form_start` (public launch form and pipeline entry point)
 - `approval_request`
 - `task`
+- `notification` (non-blocking message to selected recipients)
 - `condition`
 - `conditional`
 - `action` (including generic integration actions like `create_document`)
@@ -183,6 +184,40 @@ The codebase currently supports these practical node families:
 The editor may display some of these under simpler visual buckets, but the JSON should keep the actual `type` used by the engine.
 
 ## Node-by-Node Guide
+
+### `notification`
+
+Use this node for reminders and process updates that do not require an answer.
+It creates no inbox task and completes after eligible channel deliveries are queued.
+Recipients are a union of individual member UUIDs/emails, department and location
+workgroup UUIDs/keys, or business job titles. Duplicate members are deduplicated.
+The message supports `plain` or restricted `markdown`; the node name is the email
+subject and message heading. Delivery channels come from each recipient's settings.
+An optional `link_button` accepts a label and HTTPS URL; `telegram_open_as` can be
+`web_app` for a Telegram Mini App link.
+
+```json
+{
+  "id": "notify_installers",
+  "name": "Dzienne przypomnienie o karcie pracy",
+  "type": "notification",
+  "config": {
+    "recipients": [{ "type": "role", "id": "Monter" }],
+    "format": "markdown",
+    "message": "Uzupełnij dzisiejszą **kartę pracy**.",
+    "link_button": {
+      "label": "Otwórz kartę pracy",
+      "url": "https://app.colba.pl/telegram-app",
+      "telegram_open_as": "web_app"
+    }
+  },
+  "transitions": { "default": "next_step" }
+}
+```
+
+Do not configure `channels`, form fields, or decision actions on this node. Its
+`default` transition is required. The first version treats message content and
+link URLs literally and does not interpolate workflow context variables.
 
 ### `collect_input`
 
